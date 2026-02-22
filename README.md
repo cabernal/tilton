@@ -163,6 +163,7 @@ Open:
 - `RMB`: issue move order
 - `WASD` / Arrow keys: pan camera
 - Mouse wheel: zoom in/out
+- `C`: toggle CRT filter
 - `Tab`: toggle level editor mode
 
 ### Editor Mode
