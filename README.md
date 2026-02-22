@@ -20,6 +20,56 @@ StarCraft/Warcraft-style control prototype in Zig using Sokol, with native and b
 - `src/units.zig`: unit selection, movement orders, and update logic
 - `src/render.zig`: world/layer/unit rendering helpers
 
+## Architecture Overview
+
+```mermaid
+flowchart LR
+    main["src/main.zig<br/>main()"] --> app["src/app.zig<br/>init / frame / event / cleanup"]
+
+    subgraph core["Core State"]
+        types["src/types.zig<br/>GameState + shared constants/types"]
+    end
+
+    subgraph gameplay["Gameplay / Editor Systems"]
+        editor["src/editor.zig<br/>paint, pick, brush, rotations"]
+        units["src/units.zig<br/>selection, move orders, unit updates"]
+    end
+
+    subgraph render_sys["Rendering"]
+        render["src/render.zig<br/>draw map, structures, units, selection"]
+        png["src/png_loader.zig<br/>PNG decode"]
+        sokol["Sokol APIs<br/>sapp / sg / sgl / sdtx"]
+    end
+
+    subgraph persistence["Persistence"]
+        mapio["src/map_io.zig<br/>save/load + v1-v4 migration"]
+        mapfile[("assets/map_layout.bin")]
+    end
+
+    app --> types
+    app --> editor
+    app --> units
+    app --> render
+    app --> mapio
+    app --> png
+    app --> sokol
+
+    mapio --> mapfile
+    render --> sokol
+
+    app -- "event() input" --> editor
+    app -- "event() input" --> units
+    app -- "frame() update" --> units
+    app -- "frame() draw" --> render
+    app -- "init()/hotkeys" --> mapio
+```
+
+Quick read order for new devs:
+- Start at `src/main.zig`, then read `src/app.zig` top-to-bottom.
+- Use `src/types.zig` as the schema for shared game/editor/render state.
+- Follow behavior by flow: `event()` -> `editor/units`, then `frame()` -> `units` update -> `render`.
+- For save/load concerns, read `src/map_io.zig` (format versions and migration rules).
+
 ## Prerequisites
 
 - Native:
