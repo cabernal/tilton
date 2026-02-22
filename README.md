@@ -10,6 +10,13 @@ StarCraft/Warcraft-style control prototype in Zig using Sokol, with native and b
 - `stb_image` for PNG loading
 - Python `http.server` (or any static server) to run the web build locally
 
+## Future Considerations
+
+- Keep current vendored dependency strategy for now (stable and reproducible).
+- Revisit migrating `third_party/sokol` to a Zig package dependency when it reduces maintenance overhead.
+- Periodically re-evaluate whether third-party C/C++ dependencies can move to package-managed sources without losing build determinism.
+- Optionally replace manual `-Demsdk=<path>` usage with an explicit package-managed `emsdk` dependency in build configuration.
+
 ## Source Layout
 
 - `src/main.zig`: minimal entrypoint
