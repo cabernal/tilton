@@ -109,11 +109,14 @@ Open:
 
 - `LMB` drag: paint tiles as a brush
 - `RMB`: pick tile from map
-- `1..8`: choose brush tile variant
+- `F` / `B` / `R`: switch layer (floor / wall / roof)
+- `1..8`: choose brush tile variant for active layer
+- `0`: clear tile (wall/roof layers)
+- `Q` / `E`: rotate wall/roof brush (0/90/180/270)
 - `[` / `]`: decrease/increase brush size
 - `Cmd/Ctrl + S`: save current painted map to `assets/map_layout.bin` (native build)
 - `Cmd/Ctrl + L`: reload map from `assets/map_layout.bin` (native build)
 
 On native builds, `assets/map_layout.bin` is auto-loaded on startup when present.
-Map files are now saved as format `v2`; legacy `v1` files are auto-migrated when loaded.
+Map files are now saved as format `v4`; legacy `v1`, `v2`, and `v3` files are auto-migrated when loaded.
 Save/load results now also appear as a short on-screen HUD message.

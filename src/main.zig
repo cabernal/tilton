@@ -14,10 +14,13 @@ const MapW = 48;
 const MapH = 48;
 const MaxUnits = 48;
 const TileVariants = 8;
+const StructureVariants = 8;
 const MapSavePath = "assets/map_layout.bin";
 const MapSaveMagic = [_]u8{ 'T', 'L', 'T', 'N' };
-const MapFormatVersionCurrent: u16 = 2;
-const MapFormatVersionLegacy: u16 = 1;
+const MapFormatVersionCurrent: u16 = 4;
+const MapFormatVersionV3: u16 = 3;
+const MapFormatVersionV2: u16 = 2;
+const MapFormatVersionV1: u16 = 1;
 const HudMessageSeconds: f32 = 2.6;
 
 const HudTone = enum {
@@ -67,6 +70,12 @@ const DragState = struct {
     current: Vec2 = .{ .x = 0, .y = 0 },
 };
 
+const EditorLayer = enum {
+    floor,
+    wall,
+    roof,
+};
+
 const GameState = struct {
     pass_action: sg.PassAction = .{},
     keys: [512]bool = [_]bool{false} ** 512,
@@ -80,17 +89,30 @@ const GameState = struct {
     drag: DragState = .{},
     paint_active: bool = false,
     editor_mode: bool = false,
-    brush_tile: u8 = 0,
+    editor_layer: EditorLayer = .floor,
+    brush_floor_tile: u8 = 0,
+    brush_wall_tile: u8 = 1,
+    brush_roof_tile: u8 = 1,
+    brush_wall_rot: u8 = 0,
+    brush_roof_rot: u8 = 0,
     brush_radius: i32 = 0,
 
     sampler: sg.Sampler = .{},
     alpha_pipeline: sgl.Pipeline = .{},
     tile_sprites: [TileVariants]Sprite = [_]Sprite{.{}} ** TileVariants,
     tile_count: usize = 0,
+    wall_sprites: [StructureVariants]Sprite = [_]Sprite{.{}} ** StructureVariants,
+    wall_count: usize = 0,
+    roof_sprites: [StructureVariants]Sprite = [_]Sprite{.{}} ** StructureVariants,
+    roof_count: usize = 0,
     unit_blue_sprite: Sprite = .{},
     unit_red_sprite: Sprite = .{},
 
-    map: [MapH][MapW]u8 = [_][MapW]u8{[_]u8{0} ** MapW} ** MapH,
+    map_floor: [MapH][MapW]u8 = [_][MapW]u8{[_]u8{0} ** MapW} ** MapH,
+    map_wall: [MapH][MapW]u8 = [_][MapW]u8{[_]u8{0} ** MapW} ** MapH,
+    map_roof: [MapH][MapW]u8 = [_][MapW]u8{[_]u8{0} ** MapW} ** MapH,
+    map_wall_rot: [MapH][MapW]u8 = [_][MapW]u8{[_]u8{0} ** MapW} ** MapH,
+    map_roof_rot: [MapH][MapW]u8 = [_][MapW]u8{[_]u8{0} ** MapW} ** MapH,
     units: [MaxUnits]Unit = undefined,
     unit_count: usize = 0,
 
@@ -130,16 +152,40 @@ fn setHudMessage(tone: HudTone, seconds: f32, comptime fmt: []const u8, args: an
     state.hud_time_left = seconds;
 }
 
-fn mapPayloadLen() usize {
+fn mapCellCount() usize {
     return MapW * MapH;
 }
 
-fn mapFileLegacySize() u64 {
-    return MapSaveMagic.len + 4 + mapPayloadLen();
+fn mapPayloadLenForVersion(version: u16) usize {
+    return switch (version) {
+        MapFormatVersionV1, MapFormatVersionV2 => mapCellCount(),
+        MapFormatVersionV3 => mapCellCount() * 3,
+        MapFormatVersionCurrent => mapCellCount() * 5,
+        else => 0,
+    };
+}
+
+fn mapFileSizeForVersion(version: u16) u64 {
+    return switch (version) {
+        MapFormatVersionV1 => MapSaveMagic.len + 4 + mapPayloadLenForVersion(version),
+        else => MapSaveMagic.len + 2 + 4 + mapPayloadLenForVersion(version),
+    };
+}
+
+fn mapFileV1Size() u64 {
+    return mapFileSizeForVersion(MapFormatVersionV1);
+}
+
+fn mapFileV2Size() u64 {
+    return mapFileSizeForVersion(MapFormatVersionV2);
+}
+
+fn mapFileV3Size() u64 {
+    return mapFileSizeForVersion(MapFormatVersionV3);
 }
 
 fn mapFileCurrentSize() u64 {
-    return MapSaveMagic.len + 2 + 4 + mapPayloadLen();
+    return mapFileSizeForVersion(MapFormatVersionCurrent);
 }
 
 fn readExact(file: *std.fs.File, dst: []u8) !void {
@@ -154,7 +200,11 @@ fn saveMapToDisk() !void {
         return error.UnsupportedPlatform;
     }
 
-    const map_bytes = std.mem.asBytes(&state.map);
+    const floor_bytes = std.mem.asBytes(&state.map_floor);
+    const wall_bytes = std.mem.asBytes(&state.map_wall);
+    const roof_bytes = std.mem.asBytes(&state.map_roof);
+    const wall_rot_bytes = std.mem.asBytes(&state.map_wall_rot);
+    const roof_rot_bytes = std.mem.asBytes(&state.map_roof_rot);
     var file = try std.fs.cwd().createFile(MapSavePath, .{ .truncate = true });
     defer file.close();
 
@@ -168,7 +218,11 @@ fn saveMapToDisk() !void {
     std.mem.writeInt(u16, dims[0..2], @as(u16, MapW), .little);
     std.mem.writeInt(u16, dims[2..4], @as(u16, MapH), .little);
     try file.writeAll(&dims);
-    try file.writeAll(map_bytes);
+    try file.writeAll(floor_bytes);
+    try file.writeAll(wall_bytes);
+    try file.writeAll(roof_bytes);
+    try file.writeAll(wall_rot_bytes);
+    try file.writeAll(roof_rot_bytes);
 }
 
 fn tryLoadMapFromDisk(report_missing: bool, report_hud: bool) void {
@@ -179,7 +233,11 @@ fn tryLoadMapFromDisk(report_missing: bool, report_hud: bool) void {
         return;
     }
 
-    const map_bytes = std.mem.asBytes(&state.map);
+    const floor_bytes = std.mem.asBytes(&state.map_floor);
+    const wall_bytes = std.mem.asBytes(&state.map_wall);
+    const roof_bytes = std.mem.asBytes(&state.map_roof);
+    const wall_rot_bytes = std.mem.asBytes(&state.map_wall_rot);
+    const roof_rot_bytes = std.mem.asBytes(&state.map_roof_rot);
 
     var file = std.fs.cwd().openFile(MapSavePath, .{}) catch |err| {
         if (err == error.FileNotFound) {
@@ -224,7 +282,9 @@ fn tryLoadMapFromDisk(report_missing: bool, report_hud: bool) void {
     }
 
     var loaded_version: u16 = 0;
-    if (stat.size == mapFileCurrentSize()) {
+    if (stat.size == mapFileV1Size()) {
+        loaded_version = MapFormatVersionV1;
+    } else if (stat.size == mapFileV2Size() or stat.size == mapFileV3Size() or stat.size == mapFileCurrentSize()) {
         var version_bytes: [2]u8 = undefined;
         readExact(&file, &version_bytes) catch |err| {
             std.log.warn("Failed reading map version from {s}: {s}", .{ MapSavePath, @errorName(err) });
@@ -234,8 +294,6 @@ fn tryLoadMapFromDisk(report_missing: bool, report_hud: bool) void {
             return;
         };
         loaded_version = std.mem.readInt(u16, version_bytes[0..2], .little);
-    } else if (stat.size == mapFileLegacySize()) {
-        loaded_version = MapFormatVersionLegacy;
     } else {
         std.log.warn(
             "Ignoring map file {s}: unsupported size {d} bytes",
@@ -254,6 +312,17 @@ fn tryLoadMapFromDisk(report_missing: bool, report_hud: bool) void {
         );
         if (report_hud) {
             setHudMessage(.failure, HudMessageSeconds, "Map version {d} is unsupported", .{loaded_version});
+        }
+        return;
+    }
+    const expected_size = mapFileSizeForVersion(loaded_version);
+    if (stat.size != expected_size) {
+        std.log.warn(
+            "Ignoring map file {s}: format v{d} expects {d} bytes, got {d}",
+            .{ MapSavePath, loaded_version, expected_size, stat.size },
+        );
+        if (report_hud) {
+            setHudMessage(.failure, HudMessageSeconds, "Map file format/size mismatch", .{});
         }
         return;
     }
@@ -276,13 +345,79 @@ fn tryLoadMapFromDisk(report_missing: bool, report_hud: bool) void {
         return;
     }
 
-    readExact(&file, map_bytes) catch |err| {
-        std.log.warn("Failed reading map payload from {s}: {s}", .{ MapSavePath, @errorName(err) });
-        if (report_hud) {
-            setHudMessage(.failure, HudMessageSeconds, "Failed reading map payload", .{});
-        }
-        return;
-    };
+    if (loaded_version == MapFormatVersionV1 or loaded_version == MapFormatVersionV2) {
+        readExact(&file, floor_bytes) catch |err| {
+            std.log.warn("Failed reading legacy map payload from {s}: {s}", .{ MapSavePath, @errorName(err) });
+            if (report_hud) {
+                setHudMessage(.failure, HudMessageSeconds, "Failed reading map payload", .{});
+            }
+            return;
+        };
+        @memset(wall_bytes, 0);
+        @memset(roof_bytes, 0);
+        @memset(wall_rot_bytes, 0);
+        @memset(roof_rot_bytes, 0);
+    } else if (loaded_version == MapFormatVersionV3) {
+        readExact(&file, floor_bytes) catch |err| {
+            std.log.warn("Failed reading floor payload from {s}: {s}", .{ MapSavePath, @errorName(err) });
+            if (report_hud) {
+                setHudMessage(.failure, HudMessageSeconds, "Failed reading floor payload", .{});
+            }
+            return;
+        };
+        readExact(&file, wall_bytes) catch |err| {
+            std.log.warn("Failed reading wall payload from {s}: {s}", .{ MapSavePath, @errorName(err) });
+            if (report_hud) {
+                setHudMessage(.failure, HudMessageSeconds, "Failed reading wall payload", .{});
+            }
+            return;
+        };
+        readExact(&file, roof_bytes) catch |err| {
+            std.log.warn("Failed reading roof payload from {s}: {s}", .{ MapSavePath, @errorName(err) });
+            if (report_hud) {
+                setHudMessage(.failure, HudMessageSeconds, "Failed reading roof payload", .{});
+            }
+            return;
+        };
+        @memset(wall_rot_bytes, 0);
+        @memset(roof_rot_bytes, 0);
+    } else {
+        readExact(&file, floor_bytes) catch |err| {
+            std.log.warn("Failed reading floor payload from {s}: {s}", .{ MapSavePath, @errorName(err) });
+            if (report_hud) {
+                setHudMessage(.failure, HudMessageSeconds, "Failed reading floor payload", .{});
+            }
+            return;
+        };
+        readExact(&file, wall_bytes) catch |err| {
+            std.log.warn("Failed reading wall payload from {s}: {s}", .{ MapSavePath, @errorName(err) });
+            if (report_hud) {
+                setHudMessage(.failure, HudMessageSeconds, "Failed reading wall payload", .{});
+            }
+            return;
+        };
+        readExact(&file, roof_bytes) catch |err| {
+            std.log.warn("Failed reading roof payload from {s}: {s}", .{ MapSavePath, @errorName(err) });
+            if (report_hud) {
+                setHudMessage(.failure, HudMessageSeconds, "Failed reading roof payload", .{});
+            }
+            return;
+        };
+        readExact(&file, wall_rot_bytes) catch |err| {
+            std.log.warn("Failed reading wall rotation payload from {s}: {s}", .{ MapSavePath, @errorName(err) });
+            if (report_hud) {
+                setHudMessage(.failure, HudMessageSeconds, "Failed reading wall rotation payload", .{});
+            }
+            return;
+        };
+        readExact(&file, roof_rot_bytes) catch |err| {
+            std.log.warn("Failed reading roof rotation payload from {s}: {s}", .{ MapSavePath, @errorName(err) });
+            if (report_hud) {
+                setHudMessage(.failure, HudMessageSeconds, "Failed reading roof rotation payload", .{});
+            }
+            return;
+        };
+    }
     std.log.info("Loaded map layout from {s} (format v{d})", .{ MapSavePath, loaded_version });
 
     if (loaded_version < MapFormatVersionCurrent) {
@@ -368,6 +503,69 @@ fn activeTileCount() usize {
     return if (state.tile_count == 0) 1 else state.tile_count;
 }
 
+fn activeWallCount() usize {
+    return state.wall_count;
+}
+
+fn activeRoofCount() usize {
+    return state.roof_count;
+}
+
+fn currentBrushTile() u8 {
+    return switch (state.editor_layer) {
+        .floor => state.brush_floor_tile,
+        .wall => state.brush_wall_tile,
+        .roof => state.brush_roof_tile,
+    };
+}
+
+fn setCurrentBrushTile(tile: u8) void {
+    switch (state.editor_layer) {
+        .floor => state.brush_floor_tile = tile,
+        .wall => state.brush_wall_tile = tile,
+        .roof => state.brush_roof_tile = tile,
+    }
+}
+
+fn currentBrushRotation() u8 {
+    return switch (state.editor_layer) {
+        .floor => 0,
+        .wall => state.brush_wall_rot % 4,
+        .roof => state.brush_roof_rot % 4,
+    };
+}
+
+fn rotateCurrentBrush(delta: i32) void {
+    switch (state.editor_layer) {
+        .floor => {},
+        .wall => {
+            const base: i32 = @intCast(state.brush_wall_rot % 4);
+            const next = @mod(base + delta, 4);
+            state.brush_wall_rot = @intCast(next);
+        },
+        .roof => {
+            const base: i32 = @intCast(state.brush_roof_rot % 4);
+            const next = @mod(base + delta, 4);
+            state.brush_roof_rot = @intCast(next);
+        },
+    }
+}
+
+fn layerName(layer: EditorLayer) []const u8 {
+    return switch (layer) {
+        .floor => "Floor",
+        .wall => "Wall",
+        .roof => "Roof",
+    };
+}
+
+fn setEditorLayer(layer: EditorLayer) void {
+    state.editor_layer = layer;
+    if (state.editor_mode) {
+        setHudMessage(.info, 1.5, "{s} layer selected", .{layerName(layer)});
+    }
+}
+
 fn worldToCell(world: Vec2) ?struct { x: i32, y: i32 } {
     const cx: i32 = @intFromFloat(@floor(world.x));
     const cy: i32 = @intFromFloat(@floor(world.y));
@@ -399,28 +597,112 @@ fn paintAtWorld(world: Vec2) void {
             const x = center.x + ox;
             const y = center.y + oy;
             if (x < 0 or x >= MapW or y < 0 or y >= MapH) continue;
-            state.map[@intCast(y)][@intCast(x)] = state.brush_tile % @as(u8, @intCast(activeTileCount()));
+            const ux: usize = @intCast(x);
+            const uy: usize = @intCast(y);
+            switch (state.editor_layer) {
+                .floor => {
+                    const count = activeTileCount();
+                    state.map_floor[uy][ux] = state.brush_floor_tile % @as(u8, @intCast(count));
+                },
+                .wall => {
+                    if (activeWallCount() == 0) continue;
+                    if (state.brush_wall_tile == 0) {
+                        state.map_wall[uy][ux] = 0;
+                        state.map_wall_rot[uy][ux] = 0;
+                    } else {
+                        const count_u8: u8 = @intCast(activeWallCount());
+                        state.map_wall[uy][ux] = ((state.brush_wall_tile - 1) % count_u8) + 1;
+                        state.map_wall_rot[uy][ux] = state.brush_wall_rot % 4;
+                    }
+                },
+                .roof => {
+                    if (activeRoofCount() == 0) continue;
+                    if (state.brush_roof_tile == 0) {
+                        state.map_roof[uy][ux] = 0;
+                        state.map_roof_rot[uy][ux] = 0;
+                    } else {
+                        const count_u8: u8 = @intCast(activeRoofCount());
+                        state.map_roof[uy][ux] = ((state.brush_roof_tile - 1) % count_u8) + 1;
+                        state.map_roof_rot[uy][ux] = state.brush_roof_rot % 4;
+                    }
+                },
+            }
         }
     }
 }
 
 fn pickTileAtWorld(world: Vec2) void {
     const cell = worldToCell(world) orelse return;
-    state.brush_tile = state.map[@intCast(cell.y)][@intCast(cell.x)] % @as(u8, @intCast(activeTileCount()));
+    const x: usize = @intCast(cell.x);
+    const y: usize = @intCast(cell.y);
+    switch (state.editor_layer) {
+        .floor => {
+            state.brush_floor_tile = state.map_floor[y][x] % @as(u8, @intCast(activeTileCount()));
+        },
+        .wall => {
+            if (activeWallCount() == 0) {
+                state.brush_wall_tile = 0;
+                state.brush_wall_rot = 0;
+            } else {
+                state.brush_wall_tile = @min(state.map_wall[y][x], @as(u8, @intCast(activeWallCount())));
+                state.brush_wall_rot = state.map_wall_rot[y][x] % 4;
+            }
+        },
+        .roof => {
+            if (activeRoofCount() == 0) {
+                state.brush_roof_tile = 0;
+                state.brush_roof_rot = 0;
+            } else {
+                state.brush_roof_tile = @min(state.map_roof[y][x], @as(u8, @intCast(activeRoofCount())));
+                state.brush_roof_rot = state.map_roof_rot[y][x] % 4;
+            }
+        },
+    }
 }
 
-fn brushTileFromKey(key: sapp.Keycode) ?u8 {
+fn numberKeyFromKeycode(key: sapp.Keycode) ?u8 {
     return switch (key) {
-        ._1 => 0,
-        ._2 => 1,
-        ._3 => 2,
-        ._4 => 3,
-        ._5 => 4,
-        ._6 => 5,
-        ._7 => 6,
-        ._8 => 7,
+        ._0 => 0,
+        ._1 => 1,
+        ._2 => 2,
+        ._3 => 3,
+        ._4 => 4,
+        ._5 => 5,
+        ._6 => 6,
+        ._7 => 7,
+        ._8 => 8,
         else => null,
     };
+}
+
+fn applyNumberBrushShortcut(number_key: u8) void {
+    switch (state.editor_layer) {
+        .floor => {
+            if (number_key == 0) return;
+            const idx = number_key - 1;
+            if (@as(usize, idx) < state.tile_count) {
+                state.brush_floor_tile = idx;
+            }
+        },
+        .wall => {
+            if (number_key == 0) {
+                state.brush_wall_tile = 0;
+                return;
+            }
+            if (@as(usize, number_key) <= state.wall_count) {
+                state.brush_wall_tile = number_key;
+            }
+        },
+        .roof => {
+            if (number_key == 0) {
+                state.brush_roof_tile = 0;
+                return;
+            }
+            if (@as(usize, number_key) <= state.roof_count) {
+                state.brush_roof_tile = number_key;
+            }
+        },
+    }
 }
 
 fn createSpriteFromPixels(width: i32, height: i32, pixels: []const u8) Sprite {
@@ -490,11 +772,24 @@ fn isMagentaKey(r: u8, g: u8, b: u8) bool {
     return r >= 220 and g <= 70 and b >= 220;
 }
 
+fn isCyanKey(r: u8, g: u8, b: u8) bool {
+    const ri: i16 = r;
+    const gi: i16 = g;
+    const bi: i16 = b;
+    const chroma_strength = (gi + bi) - (ri * 2);
+    // Accept darker teal/cyan matte colors, not only bright cyan.
+    return chroma_strength >= 70 and gi >= 90 and bi >= 90 and ri <= 140;
+}
+
+fn isChromaKey(r: u8, g: u8, b: u8) bool {
+    return isMagentaKey(r, g, b) or isCyanKey(r, g, b);
+}
+
 fn applyMagentaKeyToAlpha(pixels: []u8) usize {
     var changed: usize = 0;
     var i: usize = 0;
     while (i + 3 < pixels.len) : (i += 4) {
-        if (isMagentaKey(pixels[i + 0], pixels[i + 1], pixels[i + 2])) {
+        if (isChromaKey(pixels[i + 0], pixels[i + 1], pixels[i + 2])) {
             if (pixels[i + 3] != 0) {
                 changed += 1;
             }
@@ -1018,6 +1313,40 @@ fn isKeyDown(key: sapp.Keycode) bool {
     return false;
 }
 
+fn appendWallFromPath(path: []const u8) bool {
+    if (state.wall_count >= StructureVariants) {
+        return false;
+    }
+    if (loadTileSprite(path)) |loaded_sprite| {
+        var sprite = loaded_sprite;
+        if (sprite.isValid()) {
+            state.wall_sprites[state.wall_count] = sprite;
+            state.wall_count += 1;
+            std.log.info("Added wall variant {d}: {s}", .{ state.wall_count, path });
+            return true;
+        }
+        destroySprite(&sprite);
+    } else |_| {}
+    return false;
+}
+
+fn appendRoofFromPath(path: []const u8) bool {
+    if (state.roof_count >= StructureVariants) {
+        return false;
+    }
+    if (loadTileSprite(path)) |loaded_sprite| {
+        var sprite = loaded_sprite;
+        if (sprite.isValid()) {
+            state.roof_sprites[state.roof_count] = sprite;
+            state.roof_count += 1;
+            std.log.info("Added roof variant {d}: {s}", .{ state.roof_count, path });
+            return true;
+        }
+        destroySprite(&sprite);
+    } else |_| {}
+    return false;
+}
+
 fn update(dt: f32) void {
     const pan_speed = 520.0 / state.zoom;
     if (isKeyDown(.A) or isKeyDown(.LEFT)) {
@@ -1076,7 +1405,39 @@ fn emitQuadBottom(cx: f32, by: f32, w: f32, h: f32) void {
     sgl.v2fT2f(x0, y1, 0.0, 1.0);
 }
 
-fn drawMap() void {
+fn emitQuadBottomZRotated(world: Vec2, draw_h: f32, width_tiles: f32, rot: u8) void {
+    const angle = (@as(f32, @floatFromInt(rot % 4)) * std.math.pi) * 0.5;
+    const dir = Vec2{
+        .x = @cos(angle),
+        .y = @sin(angle),
+    };
+    const half_w = width_tiles * 0.5;
+
+    const bottom_l = worldToScreen(.{
+        .x = world.x - dir.x * half_w,
+        .y = world.y - dir.y * half_w,
+    });
+    const bottom_r = worldToScreen(.{
+        .x = world.x + dir.x * half_w,
+        .y = world.y + dir.y * half_w,
+    });
+    const top_l = Vec2{ .x = bottom_l.x, .y = bottom_l.y - draw_h };
+    const top_r = Vec2{ .x = bottom_r.x, .y = bottom_r.y - draw_h };
+
+    sgl.v2fT2f(top_l.x, top_l.y, 0.0, 0.0);
+    sgl.v2fT2f(top_r.x, top_r.y, 1.0, 0.0);
+    sgl.v2fT2f(bottom_r.x, bottom_r.y, 1.0, 1.0);
+    sgl.v2fT2f(bottom_l.x, bottom_l.y, 0.0, 1.0);
+}
+
+const VisibleBounds = struct {
+    start_x: i32,
+    end_x: i32,
+    start_y: i32,
+    end_y: i32,
+};
+
+fn computeVisibleBounds() VisibleBounds {
     const corners = [_]Vec2{
         screenToWorld(.{ .x = 0, .y = 0 }),
         screenToWorld(.{ .x = sapp.widthf(), .y = 0 }),
@@ -1096,10 +1457,16 @@ fn drawMap() void {
         max_y = @max(max_y, c.y);
     }
 
-    const start_x = @max(0, @as(i32, @intFromFloat(@floor(min_x))) - 3);
-    const end_x = @min(MapW - 1, @as(i32, @intFromFloat(@ceil(max_x))) + 3);
-    const start_y = @max(0, @as(i32, @intFromFloat(@floor(min_y))) - 3);
-    const end_y = @min(MapH - 1, @as(i32, @intFromFloat(@ceil(max_y))) + 3);
+    return .{
+        .start_x = @max(0, @as(i32, @intFromFloat(@floor(min_x))) - 3),
+        .end_x = @min(MapW - 1, @as(i32, @intFromFloat(@ceil(max_x))) + 3),
+        .start_y = @max(0, @as(i32, @intFromFloat(@floor(min_y))) - 3),
+        .end_y = @min(MapH - 1, @as(i32, @intFromFloat(@ceil(max_y))) + 3),
+    };
+}
+
+fn drawMap() void {
+    const bounds = computeVisibleBounds();
 
     if (state.tile_count == 0) {
         return;
@@ -1117,11 +1484,11 @@ fn drawMap() void {
         sgl.texture(tile.view, state.sampler);
         sgl.beginQuads();
 
-        var y: i32 = start_y;
-        while (y <= end_y) : (y += 1) {
-            var x: i32 = start_x;
-            while (x <= end_x) : (x += 1) {
-                if (@as(usize, state.map[@intCast(y)][@intCast(x)] % @as(u8, @intCast(activeTileCount()))) != tile_idx) {
+        var y: i32 = bounds.start_y;
+        while (y <= bounds.end_y) : (y += 1) {
+            var x: i32 = bounds.start_x;
+            while (x <= bounds.end_x) : (x += 1) {
+                if (@as(usize, state.map_floor[@intCast(y)][@intCast(x)] % @as(u8, @intCast(activeTileCount()))) != tile_idx) {
                     continue;
                 }
                 const world = Vec2{
@@ -1134,6 +1501,57 @@ fn drawMap() void {
             }
         }
 
+        sgl.end();
+    }
+
+    sgl.disableTexture();
+    sgl.loadDefaultPipeline();
+}
+
+fn drawStructureLayer(
+    map_layer: *const [MapH][MapW]u8,
+    rot_layer: *const [MapH][MapW]u8,
+    sprites: []const Sprite,
+    sprite_count: usize,
+) void {
+    if (sprite_count == 0) {
+        return;
+    }
+    const bounds = computeVisibleBounds();
+
+    sgl.loadPipeline(state.alpha_pipeline);
+    sgl.enableTexture();
+
+    // Building/roof atlases are authored around 64px tile width while floors may be 256px.
+    const structure_scale = @max(1.0, state.tile_world_w / 64.0);
+
+    var sprite_idx: usize = 0;
+    while (sprite_idx < sprite_count) : (sprite_idx += 1) {
+        const sprite = sprites[sprite_idx];
+        const draw_w = sprite.width * state.zoom * structure_scale;
+        const draw_h = sprite.height * state.zoom * structure_scale;
+        const width_tiles = @max(0.35, draw_w / (state.tile_world_w * state.zoom));
+
+        sgl.texture(sprite.view, state.sampler);
+        sgl.beginQuads();
+
+        var y: i32 = bounds.start_y;
+        while (y <= bounds.end_y) : (y += 1) {
+            var x: i32 = bounds.start_x;
+            while (x <= bounds.end_x) : (x += 1) {
+                const raw = map_layer[@intCast(y)][@intCast(x)];
+                if (raw == 0 or @as(usize, raw - 1) != sprite_idx) {
+                    continue;
+                }
+
+                const world = Vec2{
+                    .x = @as(f32, @floatFromInt(x)) + 0.5,
+                    .y = @as(f32, @floatFromInt(y)) + 0.5,
+                };
+                sgl.c4f(1.0, 1.0, 1.0, 1.0);
+                emitQuadBottomZRotated(world, draw_h, width_tiles, rot_layer[@intCast(y)][@intCast(x)]);
+            }
+        }
         sgl.end();
     }
 
@@ -1248,6 +1666,68 @@ fn drawSelectionBox() void {
     sgl.end();
 }
 
+fn drawEditorBrushPreviewAtWorld(world: Vec2, alpha: f32) void {
+    switch (state.editor_layer) {
+        .floor => {
+            if (state.tile_count == 0) return;
+            const idx = @as(usize, state.brush_floor_tile % @as(u8, @intCast(activeTileCount())));
+            if (idx >= state.tile_count) return;
+            const sprite = state.tile_sprites[idx];
+            const screen = worldToScreen(world);
+
+            sgl.loadPipeline(state.alpha_pipeline);
+            sgl.enableTexture();
+            sgl.texture(sprite.view, state.sampler);
+            sgl.c4f(1.0, 1.0, 1.0, alpha);
+            sgl.beginQuads();
+            emitQuadCentered(screen.x, screen.y, sprite.width * state.zoom, sprite.height * state.zoom);
+            sgl.end();
+            sgl.disableTexture();
+            sgl.loadDefaultPipeline();
+        },
+        .wall => {
+            if (state.brush_wall_tile == 0 or state.wall_count == 0) return;
+            const idx = @as(usize, (state.brush_wall_tile - 1) % @as(u8, @intCast(activeWallCount())));
+            if (idx >= state.wall_count) return;
+            const sprite = state.wall_sprites[idx];
+            const structure_scale = @max(1.0, state.tile_world_w / 64.0);
+            const draw_w = sprite.width * state.zoom * structure_scale;
+            const draw_h = sprite.height * state.zoom * structure_scale;
+            const width_tiles = @max(0.35, draw_w / (state.tile_world_w * state.zoom));
+
+            sgl.loadPipeline(state.alpha_pipeline);
+            sgl.enableTexture();
+            sgl.texture(sprite.view, state.sampler);
+            sgl.c4f(1.0, 1.0, 1.0, alpha);
+            sgl.beginQuads();
+            emitQuadBottomZRotated(world, draw_h, width_tiles, state.brush_wall_rot);
+            sgl.end();
+            sgl.disableTexture();
+            sgl.loadDefaultPipeline();
+        },
+        .roof => {
+            if (state.brush_roof_tile == 0 or state.roof_count == 0) return;
+            const idx = @as(usize, (state.brush_roof_tile - 1) % @as(u8, @intCast(activeRoofCount())));
+            if (idx >= state.roof_count) return;
+            const sprite = state.roof_sprites[idx];
+            const structure_scale = @max(1.0, state.tile_world_w / 64.0);
+            const draw_w = sprite.width * state.zoom * structure_scale;
+            const draw_h = sprite.height * state.zoom * structure_scale;
+            const width_tiles = @max(0.35, draw_w / (state.tile_world_w * state.zoom));
+
+            sgl.loadPipeline(state.alpha_pipeline);
+            sgl.enableTexture();
+            sgl.texture(sprite.view, state.sampler);
+            sgl.c4f(1.0, 1.0, 1.0, alpha);
+            sgl.beginQuads();
+            emitQuadBottomZRotated(world, draw_h, width_tiles, state.brush_roof_rot);
+            sgl.end();
+            sgl.disableTexture();
+            sgl.loadDefaultPipeline();
+        },
+    }
+}
+
 fn drawEditorOverlay() void {
     if (!state.editor_mode) {
         return;
@@ -1267,10 +1747,23 @@ fn drawEditorOverlay() void {
                     .x = @as(f32, @floatFromInt(tx)) + 0.5,
                     .y = @as(f32, @floatFromInt(ty)) + 0.5,
                 });
+                const world = Vec2{
+                    .x = @as(f32, @floatFromInt(tx)) + 0.5,
+                    .y = @as(f32, @floatFromInt(ty)) + 0.5,
+                };
                 const rx = state.tile_world_w * 0.50 * state.zoom;
                 const ry = state.tile_world_h * 0.50 * state.zoom;
+                const is_center = ox == 0 and oy == 0;
+
+                drawEditorBrushPreviewAtWorld(world, if (is_center) 0.78 else 0.42);
+
                 sgl.disableTexture();
-                sgl.c4f(0.95, 0.95, 0.95, 0.90);
+                sgl.c4f(
+                    if (is_center) 1.0 else 0.95,
+                    if (is_center) 0.92 else 0.95,
+                    if (is_center) 0.35 else 0.95,
+                    if (is_center) 0.95 else 0.70,
+                );
                 sgl.beginLineStrip();
                 sgl.v2f(screen.x, screen.y - ry);
                 sgl.v2f(screen.x + rx, screen.y);
@@ -1278,41 +1771,91 @@ fn drawEditorOverlay() void {
                 sgl.v2f(screen.x - rx, screen.y);
                 sgl.v2f(screen.x, screen.y - ry);
                 sgl.end();
+
+                if (state.editor_layer != .floor and currentBrushTile() == 0) {
+                    sgl.c4f(0.95, 0.25, 0.25, if (is_center) 0.95 else 0.75);
+                    sgl.beginLineStrip();
+                    sgl.v2f(screen.x - rx * 0.62, screen.y - ry * 0.62);
+                    sgl.v2f(screen.x + rx * 0.62, screen.y + ry * 0.62);
+                    sgl.end();
+                    sgl.beginLineStrip();
+                    sgl.v2f(screen.x + rx * 0.62, screen.y - ry * 0.62);
+                    sgl.v2f(screen.x - rx * 0.62, screen.y + ry * 0.62);
+                    sgl.end();
+                }
             }
         }
-    }
-
-    if (state.tile_count == 0) {
-        return;
     }
 
     const sw = 44.0;
     const sh = 30.0;
     const pad = 6.0;
-
-    sgl.loadPipeline(state.alpha_pipeline);
-    sgl.enableTexture();
+    const slot_count: usize = switch (state.editor_layer) {
+        .floor => state.tile_count,
+        .wall => state.wall_count + 1,
+        .roof => state.roof_count + 1,
+    };
+    if (slot_count == 0) {
+        return;
+    }
+    const selected_slot: usize = @as(usize, currentBrushTile());
 
     var i: usize = 0;
-    while (i < state.tile_count) : (i += 1) {
+    while (i < slot_count) : (i += 1) {
         const x0 = 14.0 + @as(f32, @floatFromInt(i)) * (sw + pad);
         const y0 = 14.0;
         const x1 = x0 + sw;
         const y1 = y0 + sh;
 
-        const sprite = state.tile_sprites[i];
-        sgl.texture(sprite.view, state.sampler);
-        sgl.c4f(1.0, 1.0, 1.0, 1.0);
-        sgl.beginQuads();
-        sgl.v2fT2f(x0, y0, 0.0, 0.0);
-        sgl.v2fT2f(x1, y0, 1.0, 0.0);
-        sgl.v2fT2f(x1, y1, 1.0, 1.0);
-        sgl.v2fT2f(x0, y1, 0.0, 1.0);
-        sgl.end();
+        var sprite_opt: ?Sprite = null;
+        switch (state.editor_layer) {
+            .floor => {
+                if (i < state.tile_count) sprite_opt = state.tile_sprites[i];
+            },
+            .wall => {
+                if (i > 0 and i - 1 < state.wall_count) sprite_opt = state.wall_sprites[i - 1];
+            },
+            .roof => {
+                if (i > 0 and i - 1 < state.roof_count) sprite_opt = state.roof_sprites[i - 1];
+            },
+        }
+
+        if (sprite_opt) |sprite| {
+            sgl.loadPipeline(state.alpha_pipeline);
+            sgl.enableTexture();
+            sgl.texture(sprite.view, state.sampler);
+            sgl.c4f(1.0, 1.0, 1.0, 1.0);
+            sgl.beginQuads();
+            sgl.v2fT2f(x0, y0, 0.0, 0.0);
+            sgl.v2fT2f(x1, y0, 1.0, 0.0);
+            sgl.v2fT2f(x1, y1, 1.0, 1.0);
+            sgl.v2fT2f(x0, y1, 0.0, 1.0);
+            sgl.end();
+        } else {
+            sgl.disableTexture();
+            sgl.loadDefaultPipeline();
+            sgl.c4f(0.12, 0.12, 0.12, 0.92);
+            sgl.beginQuads();
+            sgl.v2f(x0, y0);
+            sgl.v2f(x1, y0);
+            sgl.v2f(x1, y1);
+            sgl.v2f(x0, y1);
+            sgl.end();
+
+            sgl.c4f(0.55, 0.55, 0.55, 0.95);
+            sgl.beginLineStrip();
+            sgl.v2f(x0 + 6, y0 + 6);
+            sgl.v2f(x1 - 6, y1 - 6);
+            sgl.end();
+            sgl.beginLineStrip();
+            sgl.v2f(x1 - 6, y0 + 6);
+            sgl.v2f(x0 + 6, y1 - 6);
+            sgl.end();
+        }
 
         sgl.disableTexture();
         sgl.loadDefaultPipeline();
-        const is_selected = i == state.brush_tile;
+        const is_selected = i == selected_slot;
         sgl.c4f(if (is_selected) 0.15 else 0.05, if (is_selected) 1.0 else 0.05, if (is_selected) 0.20 else 0.05, 0.95);
         sgl.beginLineStrip();
         sgl.v2f(x0, y0);
@@ -1321,9 +1864,6 @@ fn drawEditorOverlay() void {
         sgl.v2f(x0, y1);
         sgl.v2f(x0, y0);
         sgl.end();
-
-        sgl.loadPipeline(state.alpha_pipeline);
-        sgl.enableTexture();
     }
 
     sgl.disableTexture();
@@ -1452,9 +1992,19 @@ fn init() callconv(.c) void {
         assetPath("iso-town-pack/units/unit_red.png"),
         assetPath("iso-town-pack/character_red.png"),
     };
+    const wall_candidates = [_][]const u8{
+        assetPath("SBS - Isometric Town Pack/Building Tiles/Isometric Buildings 1 - 64x96.png"),
+        assetPath("SBS - Isometric Town Pack/Building Tiles/Isometric Buildings 2 - 64x96.png"),
+        assetPath("SBS - Isometric Town Pack/Building Tiles/Isometric Buildings 3 - 64x96.png"),
+    };
+    const roof_candidates = [_][]const u8{
+        assetPath("SBS - Isometric Town Pack/Roof Tiles/Isometric Town Roofing - 143x92.png"),
+    };
     const discovered = discoverIsoTownPaths();
 
     state.tile_count = 0;
+    state.wall_count = 0;
+    state.roof_count = 0;
 
     for (tile_candidates) |path| {
         _ = appendTileFromPath(path);
@@ -1472,6 +2022,14 @@ fn init() callconv(.c) void {
     var ti: usize = 0;
     while (ti < discovered.tile_choices_count and state.tile_count < TileVariants) : (ti += 1) {
         _ = appendTileFromPath(discovered.tile_choices[ti].slice());
+    }
+    for (wall_candidates) |path| {
+        _ = appendWallFromPath(path);
+        if (state.wall_count >= StructureVariants) break;
+    }
+    for (roof_candidates) |path| {
+        _ = appendRoofFromPath(path);
+        if (state.roof_count >= StructureVariants) break;
     }
 
     state.unit_blue_sprite = loadSpriteFromCandidates(&blue_candidates) orelse
@@ -1491,7 +2049,11 @@ fn init() callconv(.c) void {
     while (y < MapH) : (y += 1) {
         var x: usize = 0;
         while (x < MapW) : (x += 1) {
-            state.map[y][x] = @intCast((x * 11 + y * 7) % activeTileCount());
+            state.map_floor[y][x] = @intCast((x * 11 + y * 7) % activeTileCount());
+            state.map_wall[y][x] = 0;
+            state.map_roof[y][x] = 0;
+            state.map_wall_rot[y][x] = 0;
+            state.map_roof_rot[y][x] = 0;
         }
     }
     tryLoadMapFromDisk(false, false);
@@ -1515,7 +2077,12 @@ fn init() callconv(.c) void {
     });
 
     state.zoom = 1.0;
-    state.brush_tile = 0;
+    state.editor_layer = .floor;
+    state.brush_floor_tile = 0;
+    state.brush_wall_tile = if (state.wall_count > 0) 1 else 0;
+    state.brush_roof_tile = if (state.roof_count > 0) 1 else 0;
+    state.brush_wall_rot = 0;
+    state.brush_roof_rot = 0;
     state.brush_radius = 0;
     setEditorMode(false);
     state.initialized = true;
@@ -1547,7 +2114,9 @@ fn frame() callconv(.c) void {
     sgl.loadIdentity();
 
     drawMap();
+    drawStructureLayer(&state.map_wall, &state.map_wall_rot, state.wall_sprites[0..state.wall_count], state.wall_count);
     drawUnits();
+    drawStructureLayer(&state.map_roof, &state.map_roof_rot, state.roof_sprites[0..state.roof_count], state.roof_count);
     if (!state.editor_mode) {
         drawSelectionBox();
     }
@@ -1567,6 +2136,14 @@ fn cleanup() callconv(.c) void {
     var i: usize = 0;
     while (i < state.tile_count) : (i += 1) {
         destroySprite(&state.tile_sprites[i]);
+    }
+    i = 0;
+    while (i < state.wall_count) : (i += 1) {
+        destroySprite(&state.wall_sprites[i]);
+    }
+    i = 0;
+    while (i < state.roof_count) : (i += 1) {
+        destroySprite(&state.roof_sprites[i]);
     }
     destroySprite(&state.unit_blue_sprite);
     destroySprite(&state.unit_red_sprite);
@@ -1612,10 +2189,35 @@ fn event(ev: [*c]const sapp.Event) callconv(.c) void {
                     tryLoadMapFromDisk(true, true);
                     return;
                 }
-                if (brushTileFromKey(e.key_code)) |tile| {
-                    if (@as(usize, tile) < state.tile_count) {
-                        state.brush_tile = tile;
+                if (e.key_code == .F) {
+                    setEditorLayer(.floor);
+                } else if (e.key_code == .B) {
+                    setEditorLayer(.wall);
+                } else if (e.key_code == .R) {
+                    setEditorLayer(.roof);
+                } else if (e.key_code == .Q) {
+                    rotateCurrentBrush(-1);
+                    if (state.editor_layer != .floor) {
+                        setHudMessage(
+                            .info,
+                            1.4,
+                            "{s} rotation {d}",
+                            .{ layerName(state.editor_layer), @as(u32, currentBrushRotation()) * 90 },
+                        );
                     }
+                } else if (e.key_code == .E) {
+                    rotateCurrentBrush(1);
+                    if (state.editor_layer != .floor) {
+                        setHudMessage(
+                            .info,
+                            1.4,
+                            "{s} rotation {d}",
+                            .{ layerName(state.editor_layer), @as(u32, currentBrushRotation()) * 90 },
+                        );
+                    }
+                }
+                if (numberKeyFromKeycode(e.key_code)) |number_key| {
+                    applyNumberBrushShortcut(number_key);
                 }
                 if (e.key_code == .LEFT_BRACKET) {
                     state.brush_radius = @max(0, state.brush_radius - 1);
