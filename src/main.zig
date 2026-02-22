@@ -15,6 +15,7 @@ const MapH = 48;
 const MaxUnits = 48;
 const TileVariants = 8;
 const StructureVariants = 8;
+const EmptyFloorTile: u8 = 255;
 const MapSavePath = "assets/map_layout.bin";
 const MapSaveMagic = [_]u8{ 'T', 'L', 'T', 'N' };
 const MapFormatVersionCurrent: u16 = 4;
@@ -88,8 +89,10 @@ const GameState = struct {
     mouse_screen: Vec2 = .{ .x = 0, .y = 0 },
     drag: DragState = .{},
     paint_active: bool = false,
+    paint_erase: bool = false,
     editor_mode: bool = false,
     editor_layer: EditorLayer = .floor,
+    editor_erase_mode: bool = false,
     brush_floor_tile: u8 = 0,
     brush_wall_tile: u8 = 1,
     brush_roof_tile: u8 = 1,
@@ -566,6 +569,18 @@ fn setEditorLayer(layer: EditorLayer) void {
     }
 }
 
+fn setEditorEraseMode(enabled: bool) void {
+    state.editor_erase_mode = enabled;
+    if (state.editor_mode) {
+        setHudMessage(
+            .info,
+            1.2,
+            "Erase mode {s}",
+            .{if (enabled) "ON" else "OFF"},
+        );
+    }
+}
+
 fn worldToCell(world: Vec2) ?struct { x: i32, y: i32 } {
     const cx: i32 = @intFromFloat(@floor(world.x));
     const cy: i32 = @intFromFloat(@floor(world.y));
@@ -579,6 +594,7 @@ fn setEditorMode(enabled: bool) void {
     state.editor_mode = enabled;
     state.drag = .{};
     state.paint_active = false;
+    state.paint_erase = false;
     if (enabled) {
         sapp.setWindowTitle("Zig Isometric RTS [Editor Mode]");
     } else {
@@ -586,7 +602,7 @@ fn setEditorMode(enabled: bool) void {
     }
 }
 
-fn paintAtWorld(world: Vec2) void {
+fn paintAtWorld(world: Vec2, erase: bool) void {
     const center = worldToCell(world) orelse return;
     const r = state.brush_radius;
     var oy: i32 = -r;
@@ -601,12 +617,16 @@ fn paintAtWorld(world: Vec2) void {
             const uy: usize = @intCast(y);
             switch (state.editor_layer) {
                 .floor => {
-                    const count = activeTileCount();
-                    state.map_floor[uy][ux] = state.brush_floor_tile % @as(u8, @intCast(count));
+                    if (erase) {
+                        state.map_floor[uy][ux] = EmptyFloorTile;
+                    } else {
+                        const count = activeTileCount();
+                        state.map_floor[uy][ux] = state.brush_floor_tile % @as(u8, @intCast(count));
+                    }
                 },
                 .wall => {
                     if (activeWallCount() == 0) continue;
-                    if (state.brush_wall_tile == 0) {
+                    if (erase or state.brush_wall_tile == 0) {
                         state.map_wall[uy][ux] = 0;
                         state.map_wall_rot[uy][ux] = 0;
                     } else {
@@ -617,7 +637,7 @@ fn paintAtWorld(world: Vec2) void {
                 },
                 .roof => {
                     if (activeRoofCount() == 0) continue;
-                    if (state.brush_roof_tile == 0) {
+                    if (erase or state.brush_roof_tile == 0) {
                         state.map_roof[uy][ux] = 0;
                         state.map_roof_rot[uy][ux] = 0;
                     } else {
@@ -637,7 +657,10 @@ fn pickTileAtWorld(world: Vec2) void {
     const y: usize = @intCast(cell.y);
     switch (state.editor_layer) {
         .floor => {
-            state.brush_floor_tile = state.map_floor[y][x] % @as(u8, @intCast(activeTileCount()));
+            const raw = state.map_floor[y][x];
+            if (raw != EmptyFloorTile) {
+                state.brush_floor_tile = raw % @as(u8, @intCast(activeTileCount()));
+            }
         },
         .wall => {
             if (activeWallCount() == 0) {
@@ -1488,7 +1511,11 @@ fn drawMap() void {
         while (y <= bounds.end_y) : (y += 1) {
             var x: i32 = bounds.start_x;
             while (x <= bounds.end_x) : (x += 1) {
-                if (@as(usize, state.map_floor[@intCast(y)][@intCast(x)] % @as(u8, @intCast(activeTileCount()))) != tile_idx) {
+                const raw = state.map_floor[@intCast(y)][@intCast(x)];
+                if (raw == EmptyFloorTile) {
+                    continue;
+                }
+                if (@as(usize, raw % @as(u8, @intCast(activeTileCount()))) != tile_idx) {
                     continue;
                 }
                 const world = Vec2{
@@ -1667,6 +1694,9 @@ fn drawSelectionBox() void {
 }
 
 fn drawEditorBrushPreviewAtWorld(world: Vec2, alpha: f32) void {
+    if (state.editor_erase_mode or state.paint_erase) {
+        return;
+    }
     switch (state.editor_layer) {
         .floor => {
             if (state.tile_count == 0) return;
@@ -1772,7 +1802,9 @@ fn drawEditorOverlay() void {
                 sgl.v2f(screen.x, screen.y - ry);
                 sgl.end();
 
-                if (state.editor_layer != .floor and currentBrushTile() == 0) {
+                const show_erase_cross = state.editor_erase_mode or state.paint_erase or
+                    (state.editor_layer != .floor and currentBrushTile() == 0);
+                if (show_erase_cross) {
                     sgl.c4f(0.95, 0.25, 0.25, if (is_center) 0.95 else 0.75);
                     sgl.beginLineStrip();
                     sgl.v2f(screen.x - rx * 0.62, screen.y - ry * 0.62);
@@ -2083,6 +2115,7 @@ fn init() callconv(.c) void {
     state.brush_roof_tile = if (state.roof_count > 0) 1 else 0;
     state.brush_wall_rot = 0;
     state.brush_roof_rot = 0;
+    state.editor_erase_mode = false;
     state.brush_radius = 0;
     setEditorMode(false);
     state.initialized = true;
@@ -2195,6 +2228,8 @@ fn event(ev: [*c]const sapp.Event) callconv(.c) void {
                     setEditorLayer(.wall);
                 } else if (e.key_code == .R) {
                     setEditorLayer(.roof);
+                } else if (e.key_code == .X) {
+                    setEditorEraseMode(!state.editor_erase_mode);
                 } else if (e.key_code == .Q) {
                     rotateCurrentBrush(-1);
                     if (state.editor_layer != .floor) {
@@ -2235,7 +2270,8 @@ fn event(ev: [*c]const sapp.Event) callconv(.c) void {
         .MOUSE_DOWN => {
             if (state.editor_mode and e.mouse_button == .LEFT) {
                 state.paint_active = true;
-                paintAtWorld(screenToWorld(state.mouse_screen));
+                state.paint_erase = state.editor_erase_mode or ((e.modifiers & sapp.modifier_alt) != 0);
+                paintAtWorld(screenToWorld(state.mouse_screen), state.paint_erase);
             } else if (state.editor_mode and e.mouse_button == .RIGHT) {
                 pickTileAtWorld(screenToWorld(state.mouse_screen));
             } else if (e.mouse_button == .LEFT) {
@@ -2249,7 +2285,7 @@ fn event(ev: [*c]const sapp.Event) callconv(.c) void {
         },
         .MOUSE_MOVE => {
             if (state.editor_mode and state.paint_active) {
-                paintAtWorld(screenToWorld(state.mouse_screen));
+                paintAtWorld(screenToWorld(state.mouse_screen), state.paint_erase);
             } else if (state.drag.active) {
                 state.drag.current = state.mouse_screen;
                 const dx = state.drag.current.x - state.drag.start.x;
@@ -2260,6 +2296,7 @@ fn event(ev: [*c]const sapp.Event) callconv(.c) void {
         .MOUSE_UP => {
             if (state.editor_mode and e.mouse_button == .LEFT) {
                 state.paint_active = false;
+                state.paint_erase = false;
             } else if (e.mouse_button == .LEFT and state.drag.active) {
                 const additive = (e.modifiers & sapp.modifier_shift) != 0;
                 if (state.drag.box_select) {

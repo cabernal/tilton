@@ -112,6 +112,8 @@ Open:
 - `F` / `B` / `R`: switch layer (floor / wall / roof)
 - `1..8`: choose brush tile variant for active layer
 - `0`: clear tile (wall/roof layers)
+- `X`: toggle erase mode for active layer
+- `Alt + LMB`: temporary erase while painting
 - `Q` / `E`: rotate wall/roof brush (0/90/180/270)
 - `[` / `]`: decrease/increase brush size
 - `Cmd/Ctrl + S`: save current painted map to `assets/map_layout.bin` (native build)
