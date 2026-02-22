@@ -10,6 +10,16 @@ StarCraft/Warcraft-style control prototype in Zig using Sokol, with native and b
 - `stb_image` for PNG loading
 - Python `http.server` (or any static server) to run the web build locally
 
+## Source Layout
+
+- `src/main.zig`: minimal entrypoint
+- `src/app.zig`: app lifecycle, gameplay/editor/render orchestration
+- `src/types.zig`: shared constants and core data structures
+- `src/map_io.zig`: map persistence and save-format migration logic
+- `src/editor.zig`: editor paint/pick/brush shortcut logic
+- `src/units.zig`: unit selection, movement orders, and update logic
+- `src/render.zig`: world/layer/unit rendering helpers
+
 ## Prerequisites
 
 - Native:
