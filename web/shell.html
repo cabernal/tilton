@@ -83,6 +83,53 @@
     #touch-mode-toggle:active {
       transform: translateY(1px);
     }
+    #loading-screen {
+      position: fixed;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      background: rgba(0, 0, 0, 0.68);
+      z-index: 1000;
+      transition: opacity 180ms ease;
+    }
+    #loading-screen.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+    .loading-card {
+      width: min(420px, calc(100vw - 32px));
+      background: rgba(10, 14, 18, 0.92);
+      border: 1px solid rgba(156, 189, 216, 0.45);
+      border-radius: 12px;
+      box-shadow: 0 24px 44px rgba(0, 0, 0, 0.4);
+      padding: 18px 18px 16px;
+      box-sizing: border-box;
+    }
+    .loading-title {
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      margin-bottom: 8px;
+    }
+    .loading-text {
+      font-size: 13px;
+      opacity: 0.88;
+      min-height: 18px;
+      margin-bottom: 10px;
+      overflow-wrap: anywhere;
+    }
+    .loading-bar {
+      width: 100%;
+      height: 10px;
+      border-radius: 999px;
+      background: rgba(88, 104, 118, 0.4);
+      overflow: hidden;
+    }
+    #loading-fill {
+      width: 0%;
+      height: 100%;
+      background: linear-gradient(90deg, #5ca5de 0%, #95d9ff 100%);
+      transition: width 140ms ease;
+    }
     @media (max-width: 700px) {
       header {
         padding: 8px 10px;
@@ -104,7 +151,98 @@
       <button id="touch-mode-toggle" type="button" aria-pressed="false">Drag: Pan</button>
     </div>
   </header>
+  <div id="loading-screen" role="status" aria-live="polite">
+    <div class="loading-card">
+      <div class="loading-title">Loading Tilton</div>
+      <div class="loading-text" id="loading-text">Loading game...</div>
+      <div class="loading-bar"><div id="loading-fill"></div></div>
+    </div>
+  </div>
   <canvas id="canvas" oncontextmenu="event.preventDefault()"></canvas>
+  <script>
+    (function() {
+      const loadingScreen = document.getElementById("loading-screen");
+      const loadingText = document.getElementById("loading-text");
+      const loadingFill = document.getElementById("loading-fill");
+      const canvas = document.getElementById("canvas");
+      if (!loadingScreen || !loadingText || !loadingFill) return;
+
+      let removed = false;
+      const setMessage = function(text) {
+        if (typeof text === "string" && text.trim().length > 0) {
+          loadingText.textContent = text;
+        }
+      };
+      const setProgress = function(value) {
+        const clamped = Math.max(0, Math.min(1, value));
+        loadingFill.style.width = (clamped * 100).toFixed(1) + "%";
+      };
+      const hide = function() {
+        if (removed) return;
+        removed = true;
+        loadingScreen.classList.add("hidden");
+        window.setTimeout(function() {
+          loadingScreen.remove();
+        }, 220);
+      };
+      const parseProgressFromText = function(text) {
+        const match = /\((\d+)\s*\/\s*(\d+)\)/.exec(text || "");
+        if (!match) return null;
+        const done = Number(match[1]);
+        const total = Number(match[2]);
+        if (!Number.isFinite(done) || !Number.isFinite(total) || total <= 0) return null;
+        return done / total;
+      };
+
+      const moduleRef = window.Module || {};
+      const prevSetStatus = moduleRef.setStatus;
+      const prevMonitorRunDependencies = moduleRef.monitorRunDependencies;
+      const prevOnRuntimeInitialized = moduleRef.onRuntimeInitialized;
+
+      moduleRef.canvas = canvas;
+      moduleRef.totalDependencies = 0;
+      moduleRef.setStatus = function(text) {
+        if (typeof prevSetStatus === "function") prevSetStatus(text);
+        if (typeof text === "string") {
+          setMessage(text);
+          const ratio = parseProgressFromText(text);
+          if (ratio !== null) setProgress(ratio);
+        }
+        if (!text || text === "Running...") {
+          setProgress(1);
+          hide();
+        }
+      };
+      moduleRef.monitorRunDependencies = function(left) {
+        if (typeof prevMonitorRunDependencies === "function") prevMonitorRunDependencies(left);
+        if (typeof left !== "number") return;
+        if (left > moduleRef.totalDependencies) {
+          moduleRef.totalDependencies = left;
+        }
+        const total = moduleRef.totalDependencies;
+        if (total > 0) {
+          setProgress((total - left) / total);
+          setMessage(left === 0 ? "Starting..." : "Loading assets (" + (total - left) + "/" + total + ")");
+        }
+      };
+      moduleRef.onRuntimeInitialized = function() {
+        if (typeof prevOnRuntimeInitialized === "function") prevOnRuntimeInitialized();
+        setMessage("Ready");
+        setProgress(1);
+        window.setTimeout(hide, 180);
+      };
+
+      window.Module = moduleRef;
+      setProgress(0.04);
+      setMessage("Loading game...");
+      window.addEventListener("error", function(event) {
+        const msg = event && event.message ? event.message : "Failed to load app";
+        removed = false;
+        loadingScreen.classList.remove("hidden");
+        setMessage("Error: " + msg);
+      });
+    })();
+  </script>
   {{{ SCRIPT }}}
   <script>
     (function() {

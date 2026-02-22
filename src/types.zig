@@ -128,6 +128,7 @@ pub const GameState = struct {
     hud_message: [160]u8 = [_]u8{0} ** 160,
     hud_message_len: usize = 0,
     hud_time_left: f32 = 0.0,
+    controls_overlay_visible: bool = false,
 
     initialized: bool = false,
 };

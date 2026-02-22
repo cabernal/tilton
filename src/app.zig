@@ -879,6 +879,10 @@ fn toggleTouchDragMode() void {
     setTouchDragMode(if (state.touch_drag_mode == .pan) .select else .pan);
 }
 
+fn toggleControlsOverlay() void {
+    state.controls_overlay_visible = !state.controls_overlay_visible;
+}
+
 fn keyIndex(key: sapp.Keycode) ?usize {
     const raw: i32 = @intFromEnum(key);
     if (raw < 0 or raw >= state.keys.len) {
@@ -1249,6 +1253,52 @@ fn drawHudOverlay() void {
     sdtx.draw();
 }
 
+fn drawControlsOverlay() void {
+    if (!state.controls_overlay_visible) {
+        return;
+    }
+
+    sdtx.canvas(sapp.widthf(), sapp.heightf());
+    const text_x = 3.0;
+    const text_y = 8.0;
+    var pass: usize = 0;
+    while (pass < 2) : (pass += 1) {
+        sdtx.origin(text_x + @as(f32, @floatFromInt(pass)) * 0.12, text_y);
+        sdtx.home();
+
+        sdtx.color4b(170, 238, 255, 255);
+        sdtx.puts("Controls (Esc closes)");
+        sdtx.crlf();
+        sdtx.crlf();
+
+        sdtx.color4b(236, 244, 250, 255);
+        sdtx.puts("Game: WASD/Arrows pan | Wheel zoom | LMB select/drag-box | RMB move");
+        sdtx.crlf();
+        sdtx.puts("Editor: Tab toggle | LMB paint/place | RMB pick | F/B/R layer | X erase");
+        sdtx.crlf();
+        sdtx.puts("Editor: Q/E rotate | [ / ] brush radius | 1..9 brush slot");
+        sdtx.crlf();
+        sdtx.puts("Map IO: Ctrl/Cmd+S save | Ctrl/Cmd+L load");
+        sdtx.crlf();
+
+        if (builtin.target.cpu.arch.isWasm()) {
+            sdtx.crlf();
+            sdtx.color4b(170, 238, 255, 255);
+            sdtx.puts("Mobile Web:");
+            sdtx.crlf();
+            sdtx.color4b(236, 244, 250, 255);
+            sdtx.puts("Single-finger drag: pan or selection (toggle with button or P)");
+            sdtx.crlf();
+            sdtx.puts("Two-finger drag/pinch: pan + zoom");
+            sdtx.crlf();
+            sdtx.puts("Single tap: move units, or place tile in editor mode");
+            sdtx.crlf();
+        }
+    }
+
+    sdtx.draw();
+}
+
 fn init() callconv(.c) void {
     sg.setup(.{
         .environment = sglue.environment(),
@@ -1453,6 +1503,7 @@ fn frame() callconv(.c) void {
 
     sgl.draw();
     drawHudOverlay();
+    drawControlsOverlay();
     sg.endPass();
     sg.commit();
 }
@@ -1704,6 +1755,9 @@ fn event(ev: [*c]const sapp.Event) callconv(.c) void {
             }
             if (e.key_code == .TAB) {
                 setEditorMode(!state.editor_mode);
+            }
+            if (e.key_code == .ESCAPE) {
+                toggleControlsOverlay();
             }
             if (builtin.target.cpu.arch.isWasm() and e.key_code == .P) {
                 toggleTouchDragMode();
