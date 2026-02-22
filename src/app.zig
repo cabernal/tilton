@@ -1461,6 +1461,56 @@ fn cleanup() callconv(.c) void {
     state = .{};
 }
 
+fn touchPointFromEvent(e: sapp.Event) ?sapp.Touchpoint {
+    if (e.num_touches <= 0) return null;
+
+    const count: usize = @intCast(@min(e.num_touches, sapp.max_touchpoints));
+    var i: usize = 0;
+    while (i < count) : (i += 1) {
+        if (e.touches[i].changed) return e.touches[i];
+    }
+    return e.touches[0];
+}
+
+fn beginPrimaryPointer(modifiers: u32) void {
+    if (state.editor_mode) {
+        state.paint_active = true;
+        state.paint_erase = state.editor_erase_mode or ((modifiers & sapp.modifier_alt) != 0);
+        paintAtWorld(screenToWorld(state.mouse_screen), state.paint_erase);
+    } else {
+        state.drag.active = true;
+        state.drag.box_select = false;
+        state.drag.start = state.mouse_screen;
+        state.drag.current = state.mouse_screen;
+    }
+}
+
+fn movePrimaryPointer() void {
+    if (state.editor_mode and state.paint_active) {
+        paintAtWorld(screenToWorld(state.mouse_screen), state.paint_erase);
+    } else if (state.drag.active) {
+        state.drag.current = state.mouse_screen;
+        const dx = state.drag.current.x - state.drag.start.x;
+        const dy = state.drag.current.y - state.drag.start.y;
+        state.drag.box_select = dx * dx + dy * dy > 10.0 * 10.0;
+    }
+}
+
+fn endPrimaryPointer(modifiers: u32) void {
+    if (state.editor_mode) {
+        state.paint_active = false;
+        state.paint_erase = false;
+    } else if (state.drag.active) {
+        const additive = (modifiers & sapp.modifier_shift) != 0;
+        if (state.drag.box_select) {
+            selectByBox(state.drag.start, state.drag.current, additive);
+        } else {
+            selectByClick(state.mouse_screen, additive);
+        }
+        state.drag = .{};
+    }
+}
+
 fn event(ev: [*c]const sapp.Event) callconv(.c) void {
     const e = ev[0];
     state.mouse_screen = .{ .x = e.mouse_x, .y = e.mouse_y };
@@ -1536,42 +1586,23 @@ fn event(ev: [*c]const sapp.Event) callconv(.c) void {
         },
         .MOUSE_DOWN => {
             if (state.editor_mode and e.mouse_button == .LEFT) {
-                state.paint_active = true;
-                state.paint_erase = state.editor_erase_mode or ((e.modifiers & sapp.modifier_alt) != 0);
-                paintAtWorld(screenToWorld(state.mouse_screen), state.paint_erase);
+                beginPrimaryPointer(e.modifiers);
             } else if (state.editor_mode and e.mouse_button == .RIGHT) {
                 pickTileAtWorld(screenToWorld(state.mouse_screen));
             } else if (e.mouse_button == .LEFT) {
-                state.drag.active = true;
-                state.drag.box_select = false;
-                state.drag.start = state.mouse_screen;
-                state.drag.current = state.mouse_screen;
+                beginPrimaryPointer(e.modifiers);
             } else if (e.mouse_button == .RIGHT) {
                 issueMoveOrder(state.mouse_screen);
             }
         },
         .MOUSE_MOVE => {
-            if (state.editor_mode and state.paint_active) {
-                paintAtWorld(screenToWorld(state.mouse_screen), state.paint_erase);
-            } else if (state.drag.active) {
-                state.drag.current = state.mouse_screen;
-                const dx = state.drag.current.x - state.drag.start.x;
-                const dy = state.drag.current.y - state.drag.start.y;
-                state.drag.box_select = dx * dx + dy * dy > 10.0 * 10.0;
-            }
+            movePrimaryPointer();
         },
         .MOUSE_UP => {
             if (state.editor_mode and e.mouse_button == .LEFT) {
-                state.paint_active = false;
-                state.paint_erase = false;
+                endPrimaryPointer(e.modifiers);
             } else if (e.mouse_button == .LEFT and state.drag.active) {
-                const additive = (e.modifiers & sapp.modifier_shift) != 0;
-                if (state.drag.box_select) {
-                    selectByBox(state.drag.start, state.drag.current, additive);
-                } else {
-                    selectByClick(state.mouse_screen, additive);
-                }
-                state.drag = .{};
+                endPrimaryPointer(e.modifiers);
             }
         },
         .MOUSE_SCROLL => {
@@ -1582,6 +1613,24 @@ fn event(ev: [*c]const sapp.Event) callconv(.c) void {
             const after_iso = worldToIso(after);
             state.camera_iso.x += before_iso.x - after_iso.x;
             state.camera_iso.y += before_iso.y - after_iso.y;
+        },
+        .TOUCHES_BEGAN => {
+            if (touchPointFromEvent(e)) |touch| {
+                state.mouse_screen = .{ .x = touch.pos_x, .y = touch.pos_y };
+                beginPrimaryPointer(0);
+            }
+        },
+        .TOUCHES_MOVED => {
+            if (touchPointFromEvent(e)) |touch| {
+                state.mouse_screen = .{ .x = touch.pos_x, .y = touch.pos_y };
+                movePrimaryPointer();
+            }
+        },
+        .TOUCHES_ENDED, .TOUCHES_CANCELLED => {
+            if (touchPointFromEvent(e)) |touch| {
+                state.mouse_screen = .{ .x = touch.pos_x, .y = touch.pos_y };
+            }
+            endPrimaryPointer(0);
         },
         else => {},
     }
@@ -1601,7 +1650,7 @@ fn appDesc() sapp.Desc {
         .icon = .{ .sokol_default = true },
         .html5 = .{
             .canvas_selector = "#canvas",
-            .canvas_resize = false,
+            .canvas_resize = true,
             .preserve_drawing_buffer = false,
             .premultiplied_alpha = true,
             .ask_leave_site = false,
