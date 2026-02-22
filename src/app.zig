@@ -38,6 +38,757 @@ const GameState = t.GameState;
 
 var state: GameState = .{};
 
+const crt_vs_glsl =
+    \\#version 330
+    \\layout(location=0) in vec2 position;
+    \\out vec2 uv;
+    \\
+    \\void main() {
+    \\    gl_Position = vec4(position, 0.0, 1.0);
+    \\    uv = position * 0.5 + 0.5;
+    \\}
+;
+
+const crt_fs_glsl =
+    \\#version 330
+    \\in vec2 uv;
+    \\out vec4 frag_color;
+    \\
+    \\void main() {
+    \\    vec2 centered = uv * 2.0 - 1.0;
+    \\    float scan = 0.5 + 0.5 * sin(gl_FragCoord.y * 3.14159265);
+    \\    float grille = 0.5 + 0.5 * sin(gl_FragCoord.x * 2.09439510);
+    \\    float edge = dot(centered * vec2(0.82, 1.05), centered * vec2(0.82, 1.05));
+    \\    float vignette = 1.0 - clamp(edge, 0.0, 1.0);
+    \\    float darken = (1.0 - scan) * 0.24 + (1.0 - grille) * 0.16 + (1.0 - vignette) * 0.24;
+    \\    float alpha = clamp(0.05 + darken, 0.0, 0.70);
+    \\    frag_color = vec4(0.02, 0.05, 0.02, alpha);
+    \\}
+;
+
+const crt_vs_gles3 =
+    \\#version 300 es
+    \\precision mediump float;
+    \\layout(location=0) in vec2 position;
+    \\out vec2 uv;
+    \\
+    \\void main() {
+    \\    gl_Position = vec4(position, 0.0, 1.0);
+    \\    uv = position * 0.5 + 0.5;
+    \\}
+;
+
+const crt_fs_gles3 =
+    \\#version 300 es
+    \\precision mediump float;
+    \\in vec2 uv;
+    \\out vec4 frag_color;
+    \\
+    \\void main() {
+    \\    vec2 centered = uv * 2.0 - 1.0;
+    \\    float scan = 0.5 + 0.5 * sin(gl_FragCoord.y * 3.14159265);
+    \\    float grille = 0.5 + 0.5 * sin(gl_FragCoord.x * 2.09439510);
+    \\    float edge = dot(centered * vec2(0.82, 1.05), centered * vec2(0.82, 1.05));
+    \\    float vignette = 1.0 - clamp(edge, 0.0, 1.0);
+    \\    float darken = (1.0 - scan) * 0.24 + (1.0 - grille) * 0.16 + (1.0 - vignette) * 0.24;
+    \\    float alpha = clamp(0.05 + darken, 0.0, 0.70);
+    \\    frag_color = vec4(0.02, 0.05, 0.02, alpha);
+    \\}
+;
+
+const crt_src_hlsl =
+    \\struct VSIn {
+    \\    float2 position : POSITION;
+    \\};
+    \\
+    \\struct VSOut {
+    \\    float4 pos : SV_Position;
+    \\    float2 uv : TEXCOORD0;
+    \\};
+    \\
+    \\VSOut vs_main(VSIn in_vert) {
+    \\    VSOut outp;
+    \\    outp.pos = float4(in_vert.position, 0.0, 1.0);
+    \\    outp.uv = in_vert.position * 0.5 + 0.5;
+    \\    return outp;
+    \\}
+    \\
+    \\float4 fs_main(VSOut in_frag) : SV_Target0 {
+    \\    float2 centered = in_frag.uv * 2.0 - 1.0;
+    \\    float scan = 0.5 + 0.5 * sin(in_frag.pos.y * 3.14159265);
+    \\    float grille = 0.5 + 0.5 * sin(in_frag.pos.x * 2.09439510);
+    \\    float edge = dot(centered * float2(0.82, 1.05), centered * float2(0.82, 1.05));
+    \\    float vignette = 1.0 - clamp(edge, 0.0, 1.0);
+    \\    float darken = (1.0 - scan) * 0.24 + (1.0 - grille) * 0.16 + (1.0 - vignette) * 0.24;
+    \\    float alpha = clamp(0.05 + darken, 0.0, 0.70);
+    \\    return float4(0.02, 0.05, 0.02, alpha);
+    \\}
+;
+
+const crt_src_metal =
+    \\#include <metal_stdlib>
+    \\using namespace metal;
+    \\
+    \\struct VSIn {
+    \\    float2 position [[attribute(0)]];
+    \\};
+    \\
+    \\struct VSOut {
+    \\    float4 pos [[position]];
+    \\    float2 uv;
+    \\};
+    \\
+    \\vertex VSOut vs_main(VSIn in_vert [[stage_in]]) {
+    \\    VSOut outp;
+    \\    outp.pos = float4(in_vert.position, 0.0, 1.0);
+    \\    outp.uv = in_vert.position * 0.5 + 0.5;
+    \\    return outp;
+    \\}
+    \\
+    \\fragment float4 fs_main(VSOut in_frag [[stage_in]]) {
+    \\    float2 centered = in_frag.uv * 2.0 - 1.0;
+    \\    float scan = 0.5 + 0.5 * sin(in_frag.pos.y * 3.14159265);
+    \\    float grille = 0.5 + 0.5 * sin(in_frag.pos.x * 2.09439510);
+    \\    float edge = dot(centered * float2(0.82, 1.05), centered * float2(0.82, 1.05));
+    \\    float vignette = 1.0 - clamp(edge, 0.0, 1.0);
+    \\    float darken = (1.0 - scan) * 0.24 + (1.0 - grille) * 0.16 + (1.0 - vignette) * 0.24;
+    \\    float alpha = clamp(0.05 + darken, 0.0, 0.70);
+    \\    return float4(0.02, 0.05, 0.02, alpha);
+    \\}
+;
+
+const dither_vs_glsl =
+    \\#version 330
+    \\layout(location=0) in vec2 position;
+    \\out vec2 uv;
+    \\
+    \\void main() {
+    \\    gl_Position = vec4(position, 0.0, 1.0);
+    \\    uv = position * 0.5 + 0.5;
+    \\}
+;
+
+const dither_fs_glsl =
+    \\#version 330
+    \\uniform sampler2D scene_tex;
+    \\in vec2 uv;
+    \\out vec4 frag_color;
+    \\
+    \\float bwThreshold4x4(vec2 frag_xy) {
+    \\    int x = int(frag_xy.x) & 3;
+    \\    int y = int(frag_xy.y) & 3;
+    \\    float t = 0.0;
+    \\    if (y == 0) {
+    \\        if (x == 0) t = 0.0;
+    \\        else if (x == 1) t = 8.0;
+    \\        else if (x == 2) t = 2.0;
+    \\        else t = 10.0;
+    \\    } else if (y == 1) {
+    \\        if (x == 0) t = 12.0;
+    \\        else if (x == 1) t = 4.0;
+    \\        else if (x == 2) t = 14.0;
+    \\        else t = 6.0;
+    \\    } else if (y == 2) {
+    \\        if (x == 0) t = 3.0;
+    \\        else if (x == 1) t = 11.0;
+    \\        else if (x == 2) t = 1.0;
+    \\        else t = 9.0;
+    \\    } else {
+    \\        if (x == 0) t = 15.0;
+    \\        else if (x == 1) t = 7.0;
+    \\        else if (x == 2) t = 13.0;
+    \\        else t = 5.0;
+    \\    }
+    \\    return (t + 0.5) / 16.0;
+    \\}
+    \\
+    \\void main() {
+    \\    vec4 src = texture(scene_tex, uv);
+    \\    float luma = dot(src.rgb, vec3(0.299, 0.587, 0.114));
+    \\    float threshold = bwThreshold4x4(gl_FragCoord.xy);
+    \\    float bw = step(threshold, luma);
+    \\    frag_color = vec4(vec3(bw), src.a);
+    \\}
+;
+
+const dither_vs_gles3 =
+    \\#version 300 es
+    \\precision highp float;
+    \\layout(location=0) in vec2 position;
+    \\out vec2 uv;
+    \\
+    \\void main() {
+    \\    gl_Position = vec4(position, 0.0, 1.0);
+    \\    uv = position * 0.5 + 0.5;
+    \\}
+;
+
+const dither_fs_gles3 =
+    \\#version 300 es
+    \\precision highp float;
+    \\uniform sampler2D scene_tex;
+    \\in vec2 uv;
+    \\out vec4 frag_color;
+    \\
+    \\float bwThreshold4x4(vec2 frag_xy) {
+    \\    int x = int(frag_xy.x) & 3;
+    \\    int y = int(frag_xy.y) & 3;
+    \\    float t = 0.0;
+    \\    if (y == 0) {
+    \\        if (x == 0) t = 0.0;
+    \\        else if (x == 1) t = 8.0;
+    \\        else if (x == 2) t = 2.0;
+    \\        else t = 10.0;
+    \\    } else if (y == 1) {
+    \\        if (x == 0) t = 12.0;
+    \\        else if (x == 1) t = 4.0;
+    \\        else if (x == 2) t = 14.0;
+    \\        else t = 6.0;
+    \\    } else if (y == 2) {
+    \\        if (x == 0) t = 3.0;
+    \\        else if (x == 1) t = 11.0;
+    \\        else if (x == 2) t = 1.0;
+    \\        else t = 9.0;
+    \\    } else {
+    \\        if (x == 0) t = 15.0;
+    \\        else if (x == 1) t = 7.0;
+    \\        else if (x == 2) t = 13.0;
+    \\        else t = 5.0;
+    \\    }
+    \\    return (t + 0.5) / 16.0;
+    \\}
+    \\
+    \\void main() {
+    \\    vec4 src = texture(scene_tex, uv);
+    \\    float luma = dot(src.rgb, vec3(0.299, 0.587, 0.114));
+    \\    float threshold = bwThreshold4x4(gl_FragCoord.xy);
+    \\    float bw = step(threshold, luma);
+    \\    frag_color = vec4(vec3(bw), src.a);
+    \\}
+;
+
+const dither_src_hlsl =
+    \\Texture2D scene_tex : register(t0);
+    \\SamplerState scene_smp : register(s0);
+    \\
+    \\struct VSIn {
+    \\    float2 position : POSITION;
+    \\};
+    \\
+    \\struct VSOut {
+    \\    float4 pos : SV_Position;
+    \\    float2 uv : TEXCOORD0;
+    \\};
+    \\
+    \\VSOut vs_main(VSIn in_vert) {
+    \\    VSOut outp;
+    \\    outp.pos = float4(in_vert.position, 0.0, 1.0);
+    \\    outp.uv = in_vert.position * 0.5 + 0.5;
+    \\    return outp;
+    \\}
+    \\
+    \\float bwThreshold4x4(float2 frag_xy) {
+    \\    int x = ((int)frag_xy.x) & 3;
+    \\    int y = ((int)frag_xy.y) & 3;
+    \\    float t = 0.0;
+    \\    if (y == 0) {
+    \\        if (x == 0) t = 0.0;
+    \\        else if (x == 1) t = 8.0;
+    \\        else if (x == 2) t = 2.0;
+    \\        else t = 10.0;
+    \\    } else if (y == 1) {
+    \\        if (x == 0) t = 12.0;
+    \\        else if (x == 1) t = 4.0;
+    \\        else if (x == 2) t = 14.0;
+    \\        else t = 6.0;
+    \\    } else if (y == 2) {
+    \\        if (x == 0) t = 3.0;
+    \\        else if (x == 1) t = 11.0;
+    \\        else if (x == 2) t = 1.0;
+    \\        else t = 9.0;
+    \\    } else {
+    \\        if (x == 0) t = 15.0;
+    \\        else if (x == 1) t = 7.0;
+    \\        else if (x == 2) t = 13.0;
+    \\        else t = 5.0;
+    \\    }
+    \\    return (t + 0.5) / 16.0;
+    \\}
+    \\
+    \\float4 fs_main(VSOut in_frag) : SV_Target0 {
+    \\    float4 src = scene_tex.Sample(scene_smp, in_frag.uv);
+    \\    float luma = dot(src.rgb, float3(0.299, 0.587, 0.114));
+    \\    float threshold = bwThreshold4x4(in_frag.pos.xy);
+    \\    float bw = (luma >= threshold) ? 1.0 : 0.0;
+    \\    return float4(bw, bw, bw, src.a);
+    \\}
+;
+
+const dither_src_metal =
+    \\#include <metal_stdlib>
+    \\using namespace metal;
+    \\
+    \\struct VSIn {
+    \\    float2 position [[attribute(0)]];
+    \\};
+    \\
+    \\struct VSOut {
+    \\    float4 pos [[position]];
+    \\    float2 uv;
+    \\};
+    \\
+    \\vertex VSOut vs_main(VSIn in_vert [[stage_in]]) {
+    \\    VSOut outp;
+    \\    outp.pos = float4(in_vert.position, 0.0, 1.0);
+    \\    outp.uv = in_vert.position * 0.5 + 0.5;
+    \\    return outp;
+    \\}
+    \\
+    \\float bwThreshold4x4(float2 frag_xy) {
+    \\    int x = int(frag_xy.x) & 3;
+    \\    int y = int(frag_xy.y) & 3;
+    \\    float t = 0.0;
+    \\    if (y == 0) {
+    \\        if (x == 0) t = 0.0;
+    \\        else if (x == 1) t = 8.0;
+    \\        else if (x == 2) t = 2.0;
+    \\        else t = 10.0;
+    \\    } else if (y == 1) {
+    \\        if (x == 0) t = 12.0;
+    \\        else if (x == 1) t = 4.0;
+    \\        else if (x == 2) t = 14.0;
+    \\        else t = 6.0;
+    \\    } else if (y == 2) {
+    \\        if (x == 0) t = 3.0;
+    \\        else if (x == 1) t = 11.0;
+    \\        else if (x == 2) t = 1.0;
+    \\        else t = 9.0;
+    \\    } else {
+    \\        if (x == 0) t = 15.0;
+    \\        else if (x == 1) t = 7.0;
+    \\        else if (x == 2) t = 13.0;
+    \\        else t = 5.0;
+    \\    }
+    \\    return (t + 0.5) / 16.0;
+    \\}
+    \\
+    \\fragment float4 fs_main(
+    \\    VSOut in_frag [[stage_in]],
+    \\    texture2d<float> scene_tex [[texture(0)]],
+    \\    sampler scene_smp [[sampler(0)]]
+    \\) {
+    \\    float4 src = scene_tex.sample(scene_smp, in_frag.uv);
+    \\    float luma = dot(src.rgb, float3(0.299, 0.587, 0.114));
+    \\    float threshold = bwThreshold4x4(in_frag.pos.xy);
+    \\    float bw = luma >= threshold ? 1.0 : 0.0;
+    \\    return float4(bw, bw, bw, src.a);
+    \\}
+;
+
+fn makeCrtShader(backend: sg.Backend) ?sg.Shader {
+    var desc: sg.ShaderDesc = .{};
+    desc.attrs[0].base_type = .FLOAT;
+    desc.attrs[0].glsl_name = "position";
+    desc.attrs[0].hlsl_sem_name = "POSITION";
+    desc.attrs[0].hlsl_sem_index = 0;
+
+    switch (backend) {
+        .GLCORE => {
+            desc.vertex_func.source = crt_vs_glsl.ptr;
+            desc.fragment_func.source = crt_fs_glsl.ptr;
+        },
+        .GLES3 => {
+            desc.vertex_func.source = crt_vs_gles3.ptr;
+            desc.fragment_func.source = crt_fs_gles3.ptr;
+        },
+        .D3D11 => {
+            desc.vertex_func.source = crt_src_hlsl.ptr;
+            desc.vertex_func.entry = "vs_main";
+            desc.fragment_func.source = crt_src_hlsl.ptr;
+            desc.fragment_func.entry = "fs_main";
+        },
+        .METAL_IOS, .METAL_MACOS, .METAL_SIMULATOR => {
+            desc.vertex_func.source = crt_src_metal.ptr;
+            desc.vertex_func.entry = "vs_main";
+            desc.fragment_func.source = crt_src_metal.ptr;
+            desc.fragment_func.entry = "fs_main";
+        },
+        else => return null,
+    }
+
+    const shader = sg.makeShader(desc);
+    if (shader.id == 0) {
+        return null;
+    }
+    return shader;
+}
+
+fn makeDitherShader(backend: sg.Backend) ?sg.Shader {
+    var desc: sg.ShaderDesc = .{};
+    desc.attrs[0].base_type = .FLOAT;
+    desc.attrs[0].glsl_name = "position";
+    desc.attrs[0].hlsl_sem_name = "POSITION";
+    desc.attrs[0].hlsl_sem_index = 0;
+
+    desc.views[0].texture.stage = .FRAGMENT;
+    desc.views[0].texture.image_type = ._2D;
+    desc.views[0].texture.sample_type = .FLOAT;
+    desc.samplers[0].stage = .FRAGMENT;
+    desc.samplers[0].sampler_type = .FILTERING;
+    desc.texture_sampler_pairs[0].stage = .FRAGMENT;
+    desc.texture_sampler_pairs[0].view_slot = 0;
+    desc.texture_sampler_pairs[0].sampler_slot = 0;
+    desc.texture_sampler_pairs[0].glsl_name = "scene_tex";
+
+    switch (backend) {
+        .GLCORE => {
+            desc.vertex_func.source = dither_vs_glsl.ptr;
+            desc.fragment_func.source = dither_fs_glsl.ptr;
+        },
+        .GLES3 => {
+            desc.vertex_func.source = dither_vs_gles3.ptr;
+            desc.fragment_func.source = dither_fs_gles3.ptr;
+        },
+        .D3D11 => {
+            desc.vertex_func.source = dither_src_hlsl.ptr;
+            desc.vertex_func.entry = "vs_main";
+            desc.fragment_func.source = dither_src_hlsl.ptr;
+            desc.fragment_func.entry = "fs_main";
+            desc.views[0].texture.hlsl_register_t_n = 0;
+            desc.samplers[0].hlsl_register_s_n = 0;
+        },
+        .METAL_IOS, .METAL_MACOS, .METAL_SIMULATOR => {
+            desc.vertex_func.source = dither_src_metal.ptr;
+            desc.vertex_func.entry = "vs_main";
+            desc.fragment_func.source = dither_src_metal.ptr;
+            desc.fragment_func.entry = "fs_main";
+            desc.views[0].texture.msl_texture_n = 0;
+            desc.samplers[0].msl_sampler_n = 0;
+        },
+        else => return null,
+    }
+
+    const shader = sg.makeShader(desc);
+    if (shader.id == 0) {
+        return null;
+    }
+    return shader;
+}
+
+fn initCrtPipeline() void {
+    const crt_vertices = [_]f32{
+        -1.0, -1.0,
+        3.0,  -1.0,
+        -1.0, 3.0,
+    };
+    state.crt_vertex_buffer = sg.makeBuffer(.{
+        .usage = .{
+            .vertex_buffer = true,
+            .immutable = true,
+        },
+        .data = sg.asRange(&crt_vertices),
+    });
+    if (state.crt_vertex_buffer.id == 0) {
+        state.crt_enabled = false;
+        std.log.warn("CRT filter disabled: fullscreen triangle buffer creation failed", .{});
+        return;
+    }
+
+    const backend = sg.queryBackend();
+    state.crt_shader = makeCrtShader(backend) orelse {
+        sg.destroyBuffer(state.crt_vertex_buffer);
+        state.crt_vertex_buffer = .{};
+        state.crt_enabled = false;
+        std.log.warn("CRT filter disabled: shader creation failed on backend {s}", .{@tagName(backend)});
+        return;
+    };
+
+    var desc: sg.PipelineDesc = .{};
+    desc.shader = state.crt_shader;
+    desc.layout.attrs[0].format = .FLOAT2;
+    desc.layout.buffers[0].stride = @sizeOf([2]f32);
+    desc.primitive_type = .TRIANGLES;
+    desc.colors[0].blend.enabled = true;
+    desc.colors[0].blend.src_factor_rgb = .SRC_ALPHA;
+    desc.colors[0].blend.dst_factor_rgb = .ONE_MINUS_SRC_ALPHA;
+    desc.colors[0].blend.src_factor_alpha = .ONE;
+    desc.colors[0].blend.dst_factor_alpha = .ONE_MINUS_SRC_ALPHA;
+    state.crt_pipeline = sg.makePipeline(desc);
+    if (state.crt_pipeline.id == 0) {
+        sg.destroyShader(state.crt_shader);
+        state.crt_shader = .{};
+        sg.destroyBuffer(state.crt_vertex_buffer);
+        state.crt_vertex_buffer = .{};
+        state.crt_enabled = false;
+        std.log.warn("CRT filter disabled: pipeline creation failed", .{});
+    }
+}
+
+fn drawCrtOverlay() void {
+    if (!state.crt_enabled or state.crt_pipeline.id == 0 or state.crt_vertex_buffer.id == 0) {
+        return;
+    }
+
+    sg.applyPipeline(state.crt_pipeline);
+    var bindings: sg.Bindings = .{};
+    bindings.vertex_buffers[0] = state.crt_vertex_buffer;
+    sg.applyBindings(bindings);
+    sg.draw(0, 3, 1);
+}
+
+fn initDitherPipeline() void {
+    const dither_vertices = [_]f32{
+        -1.0, -1.0,
+        3.0,  -1.0,
+        -1.0, 3.0,
+    };
+    state.dither_vertex_buffer = sg.makeBuffer(.{
+        .usage = .{
+            .vertex_buffer = true,
+            .immutable = true,
+        },
+        .data = sg.asRange(&dither_vertices),
+    });
+    if (state.dither_vertex_buffer.id == 0) {
+        state.dither_enabled = false;
+        std.log.warn("B/W dither disabled: fullscreen triangle buffer creation failed", .{});
+        return;
+    }
+
+    const backend = sg.queryBackend();
+    state.dither_shader = makeDitherShader(backend) orelse {
+        sg.destroyBuffer(state.dither_vertex_buffer);
+        state.dither_vertex_buffer = .{};
+        state.dither_enabled = false;
+        std.log.warn("B/W dither disabled: shader creation failed on backend {s}", .{@tagName(backend)});
+        return;
+    };
+
+    var desc: sg.PipelineDesc = .{};
+    desc.shader = state.dither_shader;
+    desc.layout.attrs[0].format = .FLOAT2;
+    desc.layout.buffers[0].stride = @sizeOf([2]f32);
+    desc.primitive_type = .TRIANGLES;
+    state.dither_pipeline = sg.makePipeline(desc);
+    if (state.dither_pipeline.id == 0) {
+        sg.destroyShader(state.dither_shader);
+        state.dither_shader = .{};
+        sg.destroyBuffer(state.dither_vertex_buffer);
+        state.dither_vertex_buffer = .{};
+        state.dither_enabled = false;
+        std.log.warn("B/W dither disabled: pipeline creation failed", .{});
+    }
+}
+
+fn destroyDitherSceneTargets() void {
+    if (state.dither_scene_texture_view.id != 0) {
+        sg.destroyView(state.dither_scene_texture_view);
+        state.dither_scene_texture_view = .{};
+    }
+    if (state.dither_scene_depth_view.id != 0) {
+        sg.destroyView(state.dither_scene_depth_view);
+        state.dither_scene_depth_view = .{};
+    }
+    if (state.dither_scene_resolve_view.id != 0) {
+        sg.destroyView(state.dither_scene_resolve_view);
+        state.dither_scene_resolve_view = .{};
+    }
+    if (state.dither_scene_msaa_view.id != 0) {
+        sg.destroyView(state.dither_scene_msaa_view);
+        state.dither_scene_msaa_view = .{};
+    }
+
+    if (state.dither_scene_resolve_image.id != 0) {
+        sg.destroyImage(state.dither_scene_resolve_image);
+        state.dither_scene_resolve_image = .{};
+    }
+    if (state.dither_scene_depth_image.id != 0) {
+        sg.destroyImage(state.dither_scene_depth_image);
+        state.dither_scene_depth_image = .{};
+    }
+    if (state.dither_scene_msaa_image.id != 0) {
+        sg.destroyImage(state.dither_scene_msaa_image);
+        state.dither_scene_msaa_image = .{};
+    }
+
+    state.dither_target_w = 0;
+    state.dither_target_h = 0;
+    state.dither_target_sample_count = 0;
+}
+
+fn recreateDitherSceneTargets(width: i32, height: i32, sample_count: i32) bool {
+    destroyDitherSceneTargets();
+
+    const defaults = sg.queryDesc().environment.defaults;
+    var color_format = defaults.color_format;
+    if (color_format == .DEFAULT or color_format == .NONE) {
+        color_format = .RGBA8;
+    }
+    var depth_format = defaults.depth_format;
+    if (depth_format == .DEFAULT) {
+        depth_format = .DEPTH_STENCIL;
+    }
+
+    state.dither_scene_msaa_image = sg.makeImage(.{
+        .usage = .{
+            .color_attachment = true,
+            .immutable = true,
+        },
+        .width = width,
+        .height = height,
+        .pixel_format = color_format,
+        .sample_count = sample_count,
+    });
+    if (state.dither_scene_msaa_image.id == 0) {
+        std.log.warn("B/W dither disabled: failed creating offscreen color image {d}x{d}", .{ width, height });
+        state.dither_enabled = false;
+        return false;
+    }
+
+    state.dither_scene_msaa_view = sg.makeView(.{
+        .color_attachment = .{
+            .image = state.dither_scene_msaa_image,
+        },
+    });
+    if (state.dither_scene_msaa_view.id == 0) {
+        std.log.warn("B/W dither disabled: failed creating offscreen color view", .{});
+        destroyDitherSceneTargets();
+        state.dither_enabled = false;
+        return false;
+    }
+
+    if (depth_format != .NONE) {
+        state.dither_scene_depth_image = sg.makeImage(.{
+            .usage = .{
+                .depth_stencil_attachment = true,
+                .immutable = true,
+            },
+            .width = width,
+            .height = height,
+            .pixel_format = depth_format,
+            .sample_count = sample_count,
+        });
+        if (state.dither_scene_depth_image.id == 0) {
+            std.log.warn("B/W dither disabled: failed creating offscreen depth image {d}x{d}", .{ width, height });
+            destroyDitherSceneTargets();
+            state.dither_enabled = false;
+            return false;
+        }
+
+        state.dither_scene_depth_view = sg.makeView(.{
+            .depth_stencil_attachment = .{
+                .image = state.dither_scene_depth_image,
+            },
+        });
+        if (state.dither_scene_depth_view.id == 0) {
+            std.log.warn("B/W dither disabled: failed creating offscreen depth view", .{});
+            destroyDitherSceneTargets();
+            state.dither_enabled = false;
+            return false;
+        }
+    }
+
+    if (sample_count > 1) {
+        state.dither_scene_resolve_image = sg.makeImage(.{
+            .usage = .{
+                .resolve_attachment = true,
+                .immutable = true,
+            },
+            .width = width,
+            .height = height,
+            .pixel_format = color_format,
+            .sample_count = 1,
+        });
+        if (state.dither_scene_resolve_image.id == 0) {
+            std.log.warn("B/W dither disabled: failed creating resolve image {d}x{d}", .{ width, height });
+            destroyDitherSceneTargets();
+            state.dither_enabled = false;
+            return false;
+        }
+
+        state.dither_scene_resolve_view = sg.makeView(.{
+            .resolve_attachment = .{
+                .image = state.dither_scene_resolve_image,
+            },
+        });
+        if (state.dither_scene_resolve_view.id == 0) {
+            std.log.warn("B/W dither disabled: failed creating resolve view", .{});
+            destroyDitherSceneTargets();
+            state.dither_enabled = false;
+            return false;
+        }
+
+        state.dither_scene_texture_view = sg.makeView(.{
+            .texture = .{
+                .image = state.dither_scene_resolve_image,
+            },
+        });
+    } else {
+        state.dither_scene_texture_view = sg.makeView(.{
+            .texture = .{
+                .image = state.dither_scene_msaa_image,
+            },
+        });
+    }
+
+    if (state.dither_scene_texture_view.id == 0) {
+        std.log.warn("B/W dither disabled: failed creating scene texture view", .{});
+        destroyDitherSceneTargets();
+        state.dither_enabled = false;
+        return false;
+    }
+
+    state.dither_target_w = width;
+    state.dither_target_h = height;
+    state.dither_target_sample_count = sample_count;
+    return true;
+}
+
+fn ensureDitherSceneTargets() bool {
+    if (state.dither_pipeline.id == 0 or state.dither_vertex_buffer.id == 0) {
+        return false;
+    }
+
+    const width = @max(1, sapp.width());
+    const height = @max(1, sapp.height());
+    var sample_count = sglue.swapchain().sample_count;
+    if (sample_count <= 0) {
+        sample_count = sg.queryDesc().environment.defaults.sample_count;
+    }
+    if (sample_count <= 0) {
+        sample_count = 1;
+    }
+
+    if (state.dither_scene_msaa_view.id != 0 and
+        state.dither_scene_texture_view.id != 0 and
+        state.dither_target_w == width and
+        state.dither_target_h == height and
+        state.dither_target_sample_count == sample_count)
+    {
+        return true;
+    }
+
+    return recreateDitherSceneTargets(width, height, sample_count);
+}
+
+fn drawDitherComposite() void {
+    if (!state.dither_enabled or
+        state.dither_pipeline.id == 0 or
+        state.dither_vertex_buffer.id == 0 or
+        state.dither_scene_texture_view.id == 0)
+    {
+        return;
+    }
+
+    sg.applyPipeline(state.dither_pipeline);
+    var bindings: sg.Bindings = .{};
+    bindings.vertex_buffers[0] = state.dither_vertex_buffer;
+    bindings.views[0] = state.dither_scene_texture_view;
+    bindings.samplers[0] = state.sampler;
+    sg.applyBindings(bindings);
+    sg.draw(0, 3, 1);
+}
+
 fn canPersistMap() bool {
     return !builtin.target.cpu.arch.isWasm();
 }
@@ -960,6 +1711,27 @@ fn drawSelectionBox() void {
     render_sys.drawSelectionBox(state.drag);
 }
 
+fn setup2DProjection() void {
+    sgl.defaults();
+    sgl.matrixModeProjection();
+    sgl.loadIdentity();
+    sgl.ortho(0.0, sapp.widthf(), sapp.heightf(), 0.0, -1.0, 1.0);
+
+    sgl.matrixModeModelview();
+    sgl.loadIdentity();
+}
+
+fn drawSceneGeometry() void {
+    drawMap();
+    drawStructureLayer(&state.map_wall, &state.map_wall_rot, state.wall_sprites[0..state.wall_count], state.wall_count);
+    drawUnits();
+    drawStructureLayer(&state.map_roof, &state.map_roof_rot, state.roof_sprites[0..state.roof_count], state.roof_count);
+    if (!state.editor_mode) {
+        drawSelectionBox();
+    }
+    drawEditorOverlay();
+}
+
 fn drawEditorBrushPreviewAtWorld(world: Vec2, alpha: f32) void {
     if (state.editor_erase_mode or state.paint_erase) {
         return;
@@ -1246,6 +2018,9 @@ fn init() callconv(.c) void {
     alpha_desc.colors[0].blend.src_factor_alpha = .ONE;
     alpha_desc.colors[0].blend.dst_factor_alpha = .ONE_MINUS_SRC_ALPHA;
     state.alpha_pipeline = sgl.makePipeline(alpha_desc);
+    initDitherPipeline();
+    initCrtPipeline();
+    _ = ensureDitherSceneTargets();
 
     state.pass_action = .{};
     state.pass_action.colors[0] = .{
@@ -1400,29 +2175,44 @@ fn frame() callconv(.c) void {
 
     update(dt);
 
-    sg.beginPass(.{
-        .action = state.pass_action,
-        .swapchain = sglue.swapchain(),
-    });
+    const use_dither = state.dither_enabled and ensureDitherSceneTargets();
 
-    sgl.defaults();
-    sgl.matrixModeProjection();
-    sgl.loadIdentity();
-    sgl.ortho(0.0, sapp.widthf(), sapp.heightf(), 0.0, -1.0, 1.0);
+    if (use_dither) {
+        var attachments: sg.Attachments = .{};
+        attachments.colors[0] = state.dither_scene_msaa_view;
+        if (state.dither_target_sample_count > 1) {
+            attachments.resolves[0] = state.dither_scene_resolve_view;
+        }
+        if (state.dither_scene_depth_view.id != 0) {
+            attachments.depth_stencil = state.dither_scene_depth_view;
+        }
 
-    sgl.matrixModeModelview();
-    sgl.loadIdentity();
+        sg.beginPass(.{
+            .action = state.pass_action,
+            .attachments = attachments,
+        });
+        setup2DProjection();
+        drawSceneGeometry();
+        sgl.draw();
+        sg.endPass();
 
-    drawMap();
-    drawStructureLayer(&state.map_wall, &state.map_wall_rot, state.wall_sprites[0..state.wall_count], state.wall_count);
-    drawUnits();
-    drawStructureLayer(&state.map_roof, &state.map_roof_rot, state.roof_sprites[0..state.roof_count], state.roof_count);
-    if (!state.editor_mode) {
-        drawSelectionBox();
+        sg.beginPass(.{
+            .action = state.pass_action,
+            .swapchain = sglue.swapchain(),
+        });
+        drawDitherComposite();
+    } else {
+        sg.beginPass(.{
+            .action = state.pass_action,
+            .swapchain = sglue.swapchain(),
+        });
+        setup2DProjection();
+        drawSceneGeometry();
+        sgl.draw();
     }
-    drawEditorOverlay();
 
-    sgl.draw();
+    drawCrtOverlay();
+    setup2DProjection();
     drawHudOverlay();
     sg.endPass();
     sg.commit();
@@ -1448,11 +2238,31 @@ fn cleanup() callconv(.c) void {
     destroySprite(&state.unit_blue_sprite);
     destroySprite(&state.unit_red_sprite);
 
+    destroyDitherSceneTargets();
+
     if (state.sampler.id != 0) {
         sg.destroySampler(state.sampler);
     }
     if (state.alpha_pipeline.id != 0) {
         sgl.destroyPipeline(state.alpha_pipeline);
+    }
+    if (state.dither_vertex_buffer.id != 0) {
+        sg.destroyBuffer(state.dither_vertex_buffer);
+    }
+    if (state.dither_pipeline.id != 0) {
+        sg.destroyPipeline(state.dither_pipeline);
+    }
+    if (state.dither_shader.id != 0) {
+        sg.destroyShader(state.dither_shader);
+    }
+    if (state.crt_vertex_buffer.id != 0) {
+        sg.destroyBuffer(state.crt_vertex_buffer);
+    }
+    if (state.crt_pipeline.id != 0) {
+        sg.destroyPipeline(state.crt_pipeline);
+    }
+    if (state.crt_shader.id != 0) {
+        sg.destroyShader(state.crt_shader);
     }
 
     sdtx.shutdown();
@@ -1472,6 +2282,22 @@ fn event(ev: [*c]const sapp.Event) callconv(.c) void {
             }
             if (e.key_code == .TAB) {
                 setEditorMode(!state.editor_mode);
+            }
+            if (e.key_code == .C) {
+                if (state.crt_pipeline.id != 0) {
+                    state.crt_enabled = !state.crt_enabled;
+                    setHudMessage(.info, 1.2, "CRT filter {s}", .{if (state.crt_enabled) "ON" else "OFF"});
+                } else {
+                    setHudMessage(.warning, 1.6, "CRT filter unavailable on this backend", .{});
+                }
+            }
+            if (e.key_code == .V) {
+                if (state.dither_pipeline.id != 0 and state.dither_vertex_buffer.id != 0) {
+                    state.dither_enabled = !state.dither_enabled;
+                    setHudMessage(.info, 1.2, "B/W dither {s}", .{if (state.dither_enabled) "ON" else "OFF"});
+                } else {
+                    setHudMessage(.warning, 1.6, "B/W dither unavailable on this backend", .{});
+                }
             }
             if (state.editor_mode) {
                 const modifiers: u32 = @intCast(e.modifiers);
