@@ -111,3 +111,9 @@ Open:
 - `RMB`: pick tile from map
 - `1..8`: choose brush tile variant
 - `[` / `]`: decrease/increase brush size
+- `Cmd/Ctrl + S`: save current painted map to `assets/map_layout.bin` (native build)
+- `Cmd/Ctrl + L`: reload map from `assets/map_layout.bin` (native build)
+
+On native builds, `assets/map_layout.bin` is auto-loaded on startup when present.
+Map files are now saved as format `v2`; legacy `v1` files are auto-migrated when loaded.
+Save/load results now also appear as a short on-screen HUD message.

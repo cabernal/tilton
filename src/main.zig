@@ -6,6 +6,7 @@ const sokol = @import("sokol");
 const sapp = sokol.app;
 const sg = sokol.gfx;
 const sgl = sokol.gl;
+const sdtx = sokol.debugtext;
 const sglue = sokol.glue;
 const slog = sokol.log;
 
@@ -13,6 +14,27 @@ const MapW = 48;
 const MapH = 48;
 const MaxUnits = 48;
 const TileVariants = 8;
+const MapSavePath = "assets/map_layout.bin";
+const MapSaveMagic = [_]u8{ 'T', 'L', 'T', 'N' };
+const MapFormatVersionCurrent: u16 = 2;
+const MapFormatVersionLegacy: u16 = 1;
+const HudMessageSeconds: f32 = 2.6;
+
+const HudTone = enum {
+    info,
+    success,
+    warning,
+    failure,
+};
+
+const HudPalette = struct {
+    r: f32,
+    g: f32,
+    b: f32,
+    tr: u8,
+    tg: u8,
+    tb: u8,
+};
 
 const Vec2 = struct {
     x: f32,
@@ -72,10 +94,232 @@ const GameState = struct {
     units: [MaxUnits]Unit = undefined,
     unit_count: usize = 0,
 
+    hud_tone: HudTone = .info,
+    hud_message: [160]u8 = [_]u8{0} ** 160,
+    hud_message_len: usize = 0,
+    hud_time_left: f32 = 0.0,
+
     initialized: bool = false,
 };
 
 var state: GameState = .{};
+
+fn canPersistMap() bool {
+    return !builtin.target.cpu.arch.isWasm();
+}
+
+fn hasCommandModifier(modifiers: u32) bool {
+    return (modifiers & sapp.modifier_ctrl) != 0 or (modifiers & sapp.modifier_super) != 0;
+}
+
+fn setHudMessage(tone: HudTone, seconds: f32, comptime fmt: []const u8, args: anytype) void {
+    const max_len = state.hud_message.len - 1;
+    const text = std.fmt.bufPrint(state.hud_message[0..max_len], fmt, args) catch {
+        const fallback = "status message too long";
+        const n = @min(fallback.len, max_len);
+        @memcpy(state.hud_message[0..n], fallback[0..n]);
+        state.hud_message[n] = 0;
+        state.hud_message_len = n;
+        state.hud_tone = .warning;
+        state.hud_time_left = seconds;
+        return;
+    };
+    state.hud_message_len = text.len;
+    state.hud_message[state.hud_message_len] = 0;
+    state.hud_tone = tone;
+    state.hud_time_left = seconds;
+}
+
+fn mapPayloadLen() usize {
+    return MapW * MapH;
+}
+
+fn mapFileLegacySize() u64 {
+    return MapSaveMagic.len + 4 + mapPayloadLen();
+}
+
+fn mapFileCurrentSize() u64 {
+    return MapSaveMagic.len + 2 + 4 + mapPayloadLen();
+}
+
+fn readExact(file: *std.fs.File, dst: []u8) !void {
+    const read_len = try file.readAll(dst);
+    if (read_len != dst.len) {
+        return error.UnexpectedEof;
+    }
+}
+
+fn saveMapToDisk() !void {
+    if (!canPersistMap()) {
+        return error.UnsupportedPlatform;
+    }
+
+    const map_bytes = std.mem.asBytes(&state.map);
+    var file = try std.fs.cwd().createFile(MapSavePath, .{ .truncate = true });
+    defer file.close();
+
+    try file.writeAll(&MapSaveMagic);
+
+    var version_bytes: [2]u8 = undefined;
+    std.mem.writeInt(u16, version_bytes[0..2], MapFormatVersionCurrent, .little);
+    try file.writeAll(&version_bytes);
+
+    var dims: [4]u8 = undefined;
+    std.mem.writeInt(u16, dims[0..2], @as(u16, MapW), .little);
+    std.mem.writeInt(u16, dims[2..4], @as(u16, MapH), .little);
+    try file.writeAll(&dims);
+    try file.writeAll(map_bytes);
+}
+
+fn tryLoadMapFromDisk(report_missing: bool, report_hud: bool) void {
+    if (!canPersistMap()) {
+        if (report_hud) {
+            setHudMessage(.warning, HudMessageSeconds, "Map save/load unsupported in web build", .{});
+        }
+        return;
+    }
+
+    const map_bytes = std.mem.asBytes(&state.map);
+
+    var file = std.fs.cwd().openFile(MapSavePath, .{}) catch |err| {
+        if (err == error.FileNotFound) {
+            if (report_missing) {
+                std.log.info("No saved map found at {s}", .{MapSavePath});
+            }
+            if (report_hud) {
+                setHudMessage(.info, HudMessageSeconds, "No saved map at {s}", .{MapSavePath});
+            }
+            return;
+        }
+        std.log.warn("Could not open map file {s}: {s}", .{ MapSavePath, @errorName(err) });
+        if (report_hud) {
+            setHudMessage(.failure, HudMessageSeconds, "Failed opening map file", .{});
+        }
+        return;
+    };
+    defer file.close();
+
+    const stat = file.stat() catch |err| {
+        std.log.warn("Could not stat map file {s}: {s}", .{ MapSavePath, @errorName(err) });
+        if (report_hud) {
+            setHudMessage(.failure, HudMessageSeconds, "Failed reading map metadata", .{});
+        }
+        return;
+    };
+
+    var magic: [MapSaveMagic.len]u8 = undefined;
+    readExact(&file, &magic) catch |err| {
+        std.log.warn("Failed reading map header from {s}: {s}", .{ MapSavePath, @errorName(err) });
+        if (report_hud) {
+            setHudMessage(.failure, HudMessageSeconds, "Failed reading map header", .{});
+        }
+        return;
+    };
+    if (!std.mem.eql(u8, &magic, &MapSaveMagic)) {
+        std.log.warn("Ignoring map file {s}: invalid magic", .{MapSavePath});
+        if (report_hud) {
+            setHudMessage(.failure, HudMessageSeconds, "Map file is invalid", .{});
+        }
+        return;
+    }
+
+    var loaded_version: u16 = 0;
+    if (stat.size == mapFileCurrentSize()) {
+        var version_bytes: [2]u8 = undefined;
+        readExact(&file, &version_bytes) catch |err| {
+            std.log.warn("Failed reading map version from {s}: {s}", .{ MapSavePath, @errorName(err) });
+            if (report_hud) {
+                setHudMessage(.failure, HudMessageSeconds, "Failed reading map version", .{});
+            }
+            return;
+        };
+        loaded_version = std.mem.readInt(u16, version_bytes[0..2], .little);
+    } else if (stat.size == mapFileLegacySize()) {
+        loaded_version = MapFormatVersionLegacy;
+    } else {
+        std.log.warn(
+            "Ignoring map file {s}: unsupported size {d} bytes",
+            .{ MapSavePath, stat.size },
+        );
+        if (report_hud) {
+            setHudMessage(.failure, HudMessageSeconds, "Map file size is unsupported", .{});
+        }
+        return;
+    }
+
+    if (loaded_version == 0 or loaded_version > MapFormatVersionCurrent) {
+        std.log.warn(
+            "Ignoring map file {s}: unsupported version {d}",
+            .{ MapSavePath, loaded_version },
+        );
+        if (report_hud) {
+            setHudMessage(.failure, HudMessageSeconds, "Map version {d} is unsupported", .{loaded_version});
+        }
+        return;
+    }
+
+    var dims: [4]u8 = undefined;
+    readExact(&file, &dims) catch |err| {
+        std.log.warn("Failed reading map dimensions from {s}: {s}", .{ MapSavePath, @errorName(err) });
+        if (report_hud) {
+            setHudMessage(.failure, HudMessageSeconds, "Failed reading map dimensions", .{});
+        }
+        return;
+    };
+    const w = std.mem.readInt(u16, dims[0..2], .little);
+    const h = std.mem.readInt(u16, dims[2..4], .little);
+    if (w != MapW or h != MapH) {
+        std.log.warn("Ignoring map file {s}: expected {d}x{d}, got {d}x{d}", .{ MapSavePath, MapW, MapH, w, h });
+        if (report_hud) {
+            setHudMessage(.failure, HudMessageSeconds, "Map dimensions mismatch ({d}x{d})", .{ w, h });
+        }
+        return;
+    }
+
+    readExact(&file, map_bytes) catch |err| {
+        std.log.warn("Failed reading map payload from {s}: {s}", .{ MapSavePath, @errorName(err) });
+        if (report_hud) {
+            setHudMessage(.failure, HudMessageSeconds, "Failed reading map payload", .{});
+        }
+        return;
+    };
+    std.log.info("Loaded map layout from {s} (format v{d})", .{ MapSavePath, loaded_version });
+
+    if (loaded_version < MapFormatVersionCurrent) {
+        saveMapToDisk() catch |err| {
+            std.log.warn(
+                "Loaded map format v{d} but migration to v{d} failed: {s}",
+                .{ loaded_version, MapFormatVersionCurrent, @errorName(err) },
+            );
+            if (report_hud) {
+                setHudMessage(
+                    .warning,
+                    HudMessageSeconds + 0.8,
+                    "Loaded map v{d}; migration to v{d} failed",
+                    .{ loaded_version, MapFormatVersionCurrent },
+                );
+            }
+            return;
+        };
+        std.log.info(
+            "Migrated map format from v{d} to v{d}",
+            .{ loaded_version, MapFormatVersionCurrent },
+        );
+        if (report_hud) {
+            setHudMessage(
+                .success,
+                HudMessageSeconds + 0.8,
+                "Loaded map v{d} and migrated to v{d}",
+                .{ loaded_version, MapFormatVersionCurrent },
+            );
+        }
+        return;
+    }
+
+    if (report_hud) {
+        setHudMessage(.success, HudMessageSeconds, "Loaded map v{d}", .{loaded_version});
+    }
+}
 
 fn assetPath(comptime rel: []const u8) []const u8 {
     return if (builtin.target.cpu.arch.isWasm()) "/assets/" ++ rel else "assets/" ++ rel;
@@ -802,6 +1046,10 @@ fn update(dt: f32) void {
         unit.pos.x += (dx / dist) * step;
         unit.pos.y += (dy / dist) * step;
     }
+
+    if (state.hud_time_left > 0.0) {
+        state.hud_time_left = @max(0.0, state.hud_time_left - dt);
+    }
 }
 
 fn emitQuadCentered(cx: f32, cy: f32, w: f32, h: f32) void {
@@ -1082,6 +1330,57 @@ fn drawEditorOverlay() void {
     sgl.loadDefaultPipeline();
 }
 
+fn drawHudOverlay() void {
+    if (state.hud_time_left <= 0.0 or state.hud_message_len == 0) {
+        return;
+    }
+
+    const fade = if (state.hud_time_left < 0.35) state.hud_time_left / 0.35 else 1.0;
+    const message_px_w = @as(f32, @floatFromInt(state.hud_message_len)) * 8.0;
+    const box_x = 12.0;
+    const box_y = 12.0;
+    const box_w = message_px_w + 16.0;
+    const box_h = 22.0;
+
+    const tone: HudPalette = switch (state.hud_tone) {
+        .info => .{ .r = 0.28, .g = 0.70, .b = 1.00, .tr = @as(u8, 160), .tg = @as(u8, 220), .tb = @as(u8, 255) },
+        .success => .{ .r = 0.18, .g = 0.92, .b = 0.32, .tr = @as(u8, 170), .tg = @as(u8, 255), .tb = @as(u8, 180) },
+        .warning => .{ .r = 1.00, .g = 0.78, .b = 0.20, .tr = @as(u8, 255), .tg = @as(u8, 222), .tb = @as(u8, 140) },
+        .failure => .{ .r = 1.00, .g = 0.35, .b = 0.35, .tr = @as(u8, 255), .tg = @as(u8, 170), .tb = @as(u8, 170) },
+    };
+
+    const x0 = box_x;
+    const y0 = box_y;
+    const x1 = box_x + box_w;
+    const y1 = box_y + box_h;
+
+    sgl.disableTexture();
+    sgl.c4f(0.05, 0.07, 0.09, 0.86 * fade);
+    sgl.beginQuads();
+    sgl.v2f(x0, y0);
+    sgl.v2f(x1, y0);
+    sgl.v2f(x1, y1);
+    sgl.v2f(x0, y1);
+    sgl.end();
+
+    sgl.c4f(tone.r, tone.g, tone.b, 0.98 * fade);
+    sgl.beginLineStrip();
+    sgl.v2f(x0, y0);
+    sgl.v2f(x1, y0);
+    sgl.v2f(x1, y1);
+    sgl.v2f(x0, y1);
+    sgl.v2f(x0, y0);
+    sgl.end();
+
+    sdtx.canvas(sapp.widthf(), sapp.heightf());
+    sdtx.origin((box_x + 8.0) / 8.0, (box_y + 7.0) / 8.0);
+    sdtx.home();
+    sdtx.color4b(tone.tr, tone.tg, tone.tb, @intFromFloat(255.0 * fade));
+    const message_z: [:0]const u8 = state.hud_message[0..state.hud_message_len :0];
+    sdtx.puts(message_z);
+    sdtx.draw();
+}
+
 fn init() callconv(.c) void {
     sg.setup(.{
         .environment = sglue.environment(),
@@ -1091,6 +1390,15 @@ fn init() callconv(.c) void {
     sgl.setup(.{
         .logger = .{ .func = slog.func },
     });
+
+    var dtx_desc: sdtx.Desc = .{
+        .logger = .{ .func = slog.func },
+    };
+    dtx_desc.fonts[0] = sdtx.fontCpc();
+    dtx_desc.context.max_commands = 512;
+    dtx_desc.context.char_buf_size = 4096;
+    sdtx.setup(dtx_desc);
+    sdtx.font(0);
 
     var alpha_desc: sg.PipelineDesc = .{};
     alpha_desc.colors[0].blend.enabled = true;
@@ -1186,6 +1494,7 @@ fn init() callconv(.c) void {
             state.map[y][x] = @intCast((x * 11 + y * 7) % activeTileCount());
         }
     }
+    tryLoadMapFromDisk(false, false);
 
     var i: usize = 0;
     state.unit_count = 16;
@@ -1245,6 +1554,7 @@ fn frame() callconv(.c) void {
     drawEditorOverlay();
 
     sgl.draw();
+    drawHudOverlay();
     sg.endPass();
     sg.commit();
 }
@@ -1268,6 +1578,7 @@ fn cleanup() callconv(.c) void {
         sgl.destroyPipeline(state.alpha_pipeline);
     }
 
+    sdtx.shutdown();
     sgl.shutdown();
     sg.shutdown();
     state = .{};
@@ -1286,6 +1597,21 @@ fn event(ev: [*c]const sapp.Event) callconv(.c) void {
                 setEditorMode(!state.editor_mode);
             }
             if (state.editor_mode) {
+                const modifiers: u32 = @intCast(e.modifiers);
+                if (hasCommandModifier(modifiers) and e.key_code == .S) {
+                    saveMapToDisk() catch |err| {
+                        std.log.warn("Failed saving map to {s}: {s}", .{ MapSavePath, @errorName(err) });
+                        setHudMessage(.failure, HudMessageSeconds, "Save failed: {s}", .{@errorName(err)});
+                        return;
+                    };
+                    std.log.info("Saved map layout to {s}", .{MapSavePath});
+                    setHudMessage(.success, HudMessageSeconds, "Saved map v{d}", .{MapFormatVersionCurrent});
+                    return;
+                }
+                if (hasCommandModifier(modifiers) and e.key_code == .L) {
+                    tryLoadMapFromDisk(true, true);
+                    return;
+                }
                 if (brushTileFromKey(e.key_code)) |tile| {
                     if (@as(usize, tile) < state.tile_count) {
                         state.brush_tile = tile;
