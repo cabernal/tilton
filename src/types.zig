@@ -63,6 +63,11 @@ pub const DragState = struct {
     current: Vec2 = .{ .x = 0, .y = 0 },
 };
 
+pub const TouchDragMode = enum {
+    pan,
+    select,
+};
+
 pub const EditorLayer = enum {
     floor,
     wall,
@@ -80,6 +85,14 @@ pub const GameState = struct {
     zoom: f32 = 1.0,
     mouse_screen: Vec2 = .{ .x = 0, .y = 0 },
     drag: DragState = .{},
+    touch_drag_mode: TouchDragMode = .pan,
+    touch_primary_start: Vec2 = .{ .x = 0, .y = 0 },
+    touch_primary_prev: Vec2 = .{ .x = 0, .y = 0 },
+    touch_single_active: bool = false,
+    touch_primary_moved: bool = false,
+    touch_two_finger_active: bool = false,
+    touch_pinch_prev_center: Vec2 = .{ .x = 0, .y = 0 },
+    touch_pinch_prev_dist: f32 = 0.0,
     paint_active: bool = false,
     paint_erase: bool = false,
     editor_mode: bool = false,

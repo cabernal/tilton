@@ -33,6 +33,7 @@ const Vec2 = t.Vec2;
 const Sprite = t.Sprite;
 const Unit = t.Unit;
 const DragState = t.DragState;
+const TouchDragMode = t.TouchDragMode;
 const EditorLayer = t.EditorLayer;
 const GameState = t.GameState;
 
@@ -850,6 +851,34 @@ fn issueMoveOrder(mouse: Vec2) void {
     units_sys.issueMoveOrder(&state, mouse, screenToWorld, clampWorld);
 }
 
+fn panCameraByScreenDelta(delta: Vec2) void {
+    state.camera_iso.x -= delta.x / state.zoom;
+    state.camera_iso.y -= delta.y / state.zoom;
+}
+
+fn applyZoomAroundScreen(anchor: Vec2, factor: f32) void {
+    const before = screenToWorld(anchor);
+    state.zoom = clamp(state.zoom * factor, 0.35, 2.5);
+    const after = screenToWorld(anchor);
+    const before_iso = worldToIso(before);
+    const after_iso = worldToIso(after);
+    state.camera_iso.x += before_iso.x - after_iso.x;
+    state.camera_iso.y += before_iso.y - after_iso.y;
+}
+
+fn setTouchDragMode(mode: TouchDragMode) void {
+    state.touch_drag_mode = mode;
+    const mode_name = switch (mode) {
+        .pan => "Pan",
+        .select => "Select",
+    };
+    setHudMessage(.info, 1.9, "Mobile drag mode: {s}", .{mode_name});
+}
+
+fn toggleTouchDragMode() void {
+    setTouchDragMode(if (state.touch_drag_mode == .pan) .select else .pan);
+}
+
 fn keyIndex(key: sapp.Keycode) ?usize {
     const raw: i32 = @intFromEnum(key);
     if (raw < 0 or raw >= state.keys.len) {
@@ -1461,17 +1490,6 @@ fn cleanup() callconv(.c) void {
     state = .{};
 }
 
-fn touchPointFromEvent(e: sapp.Event) ?sapp.Touchpoint {
-    if (e.num_touches <= 0) return null;
-
-    const count: usize = @intCast(@min(e.num_touches, sapp.max_touchpoints));
-    var i: usize = 0;
-    while (i < count) : (i += 1) {
-        if (e.touches[i].changed) return e.touches[i];
-    }
-    return e.touches[0];
-}
-
 fn beginPrimaryPointer(modifiers: u32) void {
     if (state.editor_mode) {
         state.paint_active = true;
@@ -1511,6 +1529,170 @@ fn endPrimaryPointer(modifiers: u32) void {
     }
 }
 
+const TouchMoveThresholdSq: f32 = 12.0 * 12.0;
+const TouchSelectThresholdSq: f32 = 10.0 * 10.0;
+
+fn touchCount(e: sapp.Event) usize {
+    return @intCast(@min(e.num_touches, sapp.max_touchpoints));
+}
+
+fn touchPos(touch: sapp.Touchpoint) Vec2 {
+    return .{ .x = touch.pos_x, .y = touch.pos_y };
+}
+
+fn beginTouchPrimary(pos: Vec2) void {
+    state.touch_single_active = true;
+    state.touch_primary_start = pos;
+    state.touch_primary_prev = pos;
+    state.touch_primary_moved = false;
+    state.mouse_screen = pos;
+    state.drag = .{};
+    state.paint_active = false;
+    state.paint_erase = false;
+}
+
+fn moveTouchPrimary(pos: Vec2) void {
+    const delta = Vec2{
+        .x = pos.x - state.touch_primary_prev.x,
+        .y = pos.y - state.touch_primary_prev.y,
+    };
+    const total_dx = pos.x - state.touch_primary_start.x;
+    const total_dy = pos.y - state.touch_primary_start.y;
+    const total_d2 = total_dx * total_dx + total_dy * total_dy;
+    if (total_d2 > TouchMoveThresholdSq) {
+        state.touch_primary_moved = true;
+    }
+
+    state.mouse_screen = pos;
+    if (state.editor_mode) {
+        state.paint_active = true;
+        state.paint_erase = state.editor_erase_mode;
+        paintAtWorld(screenToWorld(pos), state.paint_erase);
+    } else if (state.touch_drag_mode == .pan) {
+        panCameraByScreenDelta(delta);
+    } else {
+        if (!state.drag.active) {
+            state.drag.active = true;
+            state.drag.box_select = false;
+            state.drag.start = state.touch_primary_start;
+        }
+        state.drag.current = pos;
+        const dx = state.drag.current.x - state.drag.start.x;
+        const dy = state.drag.current.y - state.drag.start.y;
+        state.drag.box_select = dx * dx + dy * dy > TouchSelectThresholdSq;
+    }
+
+    state.touch_primary_prev = pos;
+}
+
+fn endTouchPrimary(pos: Vec2) void {
+    state.mouse_screen = pos;
+
+    if (state.editor_mode) {
+        if (!state.touch_primary_moved and !state.paint_active) {
+            paintAtWorld(screenToWorld(pos), state.editor_erase_mode);
+        }
+        state.paint_active = false;
+        state.paint_erase = false;
+        state.drag = .{};
+    } else {
+        if (state.touch_drag_mode == .select and state.drag.active and state.drag.box_select) {
+            selectByBox(state.drag.start, state.drag.current, false);
+        } else if (!state.touch_primary_moved) {
+            issueMoveOrder(pos);
+        }
+        state.drag = .{};
+    }
+
+    state.touch_single_active = false;
+    state.touch_primary_moved = false;
+}
+
+fn handleTwoFingerTouch(e: sapp.Event) void {
+    const p0 = touchPos(e.touches[0]);
+    const p1 = touchPos(e.touches[1]);
+    const center = Vec2{
+        .x = (p0.x + p1.x) * 0.5,
+        .y = (p0.y + p1.y) * 0.5,
+    };
+    const pinch_dx = p1.x - p0.x;
+    const pinch_dy = p1.y - p0.y;
+    const dist = @sqrt(pinch_dx * pinch_dx + pinch_dy * pinch_dy);
+
+    if (!state.touch_two_finger_active) {
+        state.touch_two_finger_active = true;
+        state.touch_single_active = false;
+        state.touch_primary_moved = true;
+        state.paint_active = false;
+        state.paint_erase = false;
+        state.drag = .{};
+        state.touch_pinch_prev_center = center;
+        state.touch_pinch_prev_dist = dist;
+        state.mouse_screen = center;
+        return;
+    }
+
+    const center_delta = Vec2{
+        .x = center.x - state.touch_pinch_prev_center.x,
+        .y = center.y - state.touch_pinch_prev_center.y,
+    };
+    panCameraByScreenDelta(center_delta);
+    if (state.touch_pinch_prev_dist > 1.0 and dist > 1.0) {
+        applyZoomAroundScreen(center, dist / state.touch_pinch_prev_dist);
+    }
+
+    state.touch_pinch_prev_center = center;
+    state.touch_pinch_prev_dist = dist;
+    state.mouse_screen = center;
+}
+
+fn handleTouchEvent(e: sapp.Event) void {
+    const count = touchCount(e);
+    if (count >= 2) {
+        handleTwoFingerTouch(e);
+        return;
+    }
+
+    if (count == 1) {
+        const pos = touchPos(e.touches[0]);
+        if (state.touch_two_finger_active) {
+            state.touch_two_finger_active = false;
+            beginTouchPrimary(pos);
+            state.touch_primary_moved = true;
+            return;
+        }
+
+        switch (e.type) {
+            .TOUCHES_BEGAN => beginTouchPrimary(pos),
+            .TOUCHES_MOVED => {
+                if (!state.touch_single_active) {
+                    beginTouchPrimary(pos);
+                }
+                moveTouchPrimary(pos);
+            },
+            .TOUCHES_ENDED, .TOUCHES_CANCELLED => {
+                if (!state.touch_single_active) {
+                    beginTouchPrimary(pos);
+                }
+                endTouchPrimary(pos);
+            },
+            else => {},
+        }
+        return;
+    }
+
+    if (e.type == .TOUCHES_ENDED or e.type == .TOUCHES_CANCELLED) {
+        state.touch_two_finger_active = false;
+        if (state.touch_single_active) {
+            endTouchPrimary(state.touch_primary_prev);
+        } else {
+            state.paint_active = false;
+            state.paint_erase = false;
+            state.drag = .{};
+        }
+    }
+}
+
 fn event(ev: [*c]const sapp.Event) callconv(.c) void {
     const e = ev[0];
     state.mouse_screen = .{ .x = e.mouse_x, .y = e.mouse_y };
@@ -1522,6 +1704,9 @@ fn event(ev: [*c]const sapp.Event) callconv(.c) void {
             }
             if (e.key_code == .TAB) {
                 setEditorMode(!state.editor_mode);
+            }
+            if (builtin.target.cpu.arch.isWasm() and e.key_code == .P) {
+                toggleTouchDragMode();
             }
             if (state.editor_mode) {
                 const modifiers: u32 = @intCast(e.modifiers);
@@ -1606,32 +1791,9 @@ fn event(ev: [*c]const sapp.Event) callconv(.c) void {
             }
         },
         .MOUSE_SCROLL => {
-            const before = screenToWorld(state.mouse_screen);
-            state.zoom = clamp(state.zoom * (1.0 + e.scroll_y * 0.1), 0.35, 2.5);
-            const after = screenToWorld(state.mouse_screen);
-            const before_iso = worldToIso(before);
-            const after_iso = worldToIso(after);
-            state.camera_iso.x += before_iso.x - after_iso.x;
-            state.camera_iso.y += before_iso.y - after_iso.y;
+            applyZoomAroundScreen(state.mouse_screen, 1.0 + e.scroll_y * 0.1);
         },
-        .TOUCHES_BEGAN => {
-            if (touchPointFromEvent(e)) |touch| {
-                state.mouse_screen = .{ .x = touch.pos_x, .y = touch.pos_y };
-                beginPrimaryPointer(0);
-            }
-        },
-        .TOUCHES_MOVED => {
-            if (touchPointFromEvent(e)) |touch| {
-                state.mouse_screen = .{ .x = touch.pos_x, .y = touch.pos_y };
-                movePrimaryPointer();
-            }
-        },
-        .TOUCHES_ENDED, .TOUCHES_CANCELLED => {
-            if (touchPointFromEvent(e)) |touch| {
-                state.mouse_screen = .{ .x = touch.pos_x, .y = touch.pos_y };
-            }
-            endPrimaryPointer(0);
-        },
+        .TOUCHES_BEGAN, .TOUCHES_MOVED, .TOUCHES_ENDED, .TOUCHES_CANCELLED => handleTouchEvent(e),
         else => {},
     }
 }

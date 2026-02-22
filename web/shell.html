@@ -57,10 +57,40 @@
     .muted {
       opacity: 0.82;
     }
+    .desktop-hint {
+      text-align: right;
+    }
+    .mobile-controls {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .mobile-controls[hidden] {
+      display: none;
+    }
+    #touch-mode-toggle {
+      border: 1px solid rgba(137, 178, 210, 0.55);
+      border-radius: 8px;
+      background: rgba(21, 41, 58, 0.96);
+      color: #ebf3f7;
+      padding: 6px 10px;
+      font: inherit;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+    #touch-mode-toggle:active {
+      transform: translateY(1px);
+    }
     @media (max-width: 700px) {
       header {
         padding: 8px 10px;
         font-size: 12px;
+      }
+      .mobile-controls {
+        width: 100%;
+        justify-content: space-between;
       }
     }
   </style>
@@ -68,9 +98,49 @@
 <body>
   <header>
     <div><strong>Zig Isometric RTS</strong></div>
-    <div class="muted">Touch drag selects/paints. Two-finger browser gestures are disabled on canvas.</div>
+    <div class="muted desktop-hint">Desktop: left drag/click select, right click move, wheel zoom, WASD pan.</div>
+    <div class="mobile-controls" id="mobile-controls" hidden>
+      <span class="muted">Mobile: tap move/place, two-finger pinch zoom.</span>
+      <button id="touch-mode-toggle" type="button" aria-pressed="false">Drag: Pan</button>
+    </div>
   </header>
   <canvas id="canvas" oncontextmenu="event.preventDefault()"></canvas>
   {{{ SCRIPT }}}
+  <script>
+    (function() {
+      const mobileControls = document.getElementById("mobile-controls");
+      const desktopHint = document.querySelector(".desktop-hint");
+      const toggle = document.getElementById("touch-mode-toggle");
+      if (!mobileControls || !desktopHint || !toggle) return;
+
+      const isMobilePointer = window.matchMedia("(pointer: coarse)").matches || (navigator.maxTouchPoints || 0) > 0;
+      if (!isMobilePointer) return;
+
+      desktopHint.hidden = true;
+      mobileControls.hidden = false;
+
+      let isPanMode = true;
+      const applyLabel = function() {
+        toggle.textContent = isPanMode ? "Drag: Pan" : "Drag: Select";
+        toggle.setAttribute("aria-pressed", isPanMode ? "false" : "true");
+      };
+      const emitToggleHotkey = function() {
+        const ev = new KeyboardEvent("keydown", {
+          key: "p",
+          code: "KeyP",
+          bubbles: true
+        });
+        window.dispatchEvent(ev);
+      };
+
+      toggle.addEventListener("click", function() {
+        isPanMode = !isPanMode;
+        applyLabel();
+        emitToggleHotkey();
+      });
+
+      applyLabel();
+    })();
+  </script>
 </body>
 </html>
