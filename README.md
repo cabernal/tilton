@@ -162,6 +162,18 @@ python3 -m http.server 8080
 Open:
 `http://localhost:8080`
 
+## Deploy Web Build To GitHub Pages
+
+This repo includes `.github/workflows/deploy-pages.yml` to publish the web build on pushes to `main`.
+
+Expected custom domain:
+- `tilton.cbrnl.com`
+
+Setup once in GitHub:
+1. Open repo `Settings` -> `Pages`
+2. Under `Build and deployment`, set `Source` to `GitHub Actions`
+3. Ensure DNS has `CNAME` `tilton` -> `cabernal.github.io`
+
 ## Controls
 
 - `LMB` click: select unit
