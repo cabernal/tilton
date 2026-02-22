@@ -1337,7 +1337,6 @@ fn drawHudOverlay() void {
 
     const fade = if (state.hud_time_left < 0.35) state.hud_time_left / 0.35 else 1.0;
     const message_px_w = @as(f32, @floatFromInt(state.hud_message_len)) * 8.0;
-    const box_x = 12.0;
     const box_y = 12.0;
     const box_w = message_px_w + 16.0;
     const box_h = 22.0;
@@ -1349,13 +1348,13 @@ fn drawHudOverlay() void {
         .failure => .{ .r = 1.00, .g = 0.35, .b = 0.35, .tr = @as(u8, 255), .tg = @as(u8, 170), .tb = @as(u8, 170) },
     };
 
-    const x0 = box_x;
+    const x0 = @max(12.0, sapp.widthf() - box_w - 12.0);
     const y0 = box_y;
-    const x1 = box_x + box_w;
+    const x1 = x0 + box_w;
     const y1 = box_y + box_h;
 
     sgl.disableTexture();
-    sgl.c4f(0.05, 0.07, 0.09, 0.86 * fade);
+    sgl.c4f(0.30, 0.30, 0.30, 0.78 * fade);
     sgl.beginQuads();
     sgl.v2f(x0, y0);
     sgl.v2f(x1, y0);
@@ -1363,7 +1362,7 @@ fn drawHudOverlay() void {
     sgl.v2f(x0, y1);
     sgl.end();
 
-    sgl.c4f(tone.r, tone.g, tone.b, 0.98 * fade);
+    sgl.c4f(0.62, 0.62, 0.62, 0.90 * fade);
     sgl.beginLineStrip();
     sgl.v2f(x0, y0);
     sgl.v2f(x1, y0);
@@ -1371,9 +1370,10 @@ fn drawHudOverlay() void {
     sgl.v2f(x0, y1);
     sgl.v2f(x0, y0);
     sgl.end();
+    sgl.draw();
 
     sdtx.canvas(sapp.widthf(), sapp.heightf());
-    sdtx.origin((box_x + 8.0) / 8.0, (box_y + 7.0) / 8.0);
+    sdtx.origin((x0 + 8.0) / 8.0, (box_y + 7.0) / 8.0);
     sdtx.home();
     sdtx.color4b(tone.tr, tone.tg, tone.tb, @intFromFloat(255.0 * fade));
     const message_z: [:0]const u8 = state.hud_message[0..state.hud_message_len :0];
